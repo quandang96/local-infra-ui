@@ -1,7 +1,13 @@
 import mysql, { type Pool, type PoolConnection, type RowDataPacket } from 'mysql2/promise';
 
 export type TaskStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'timed_out';
-export type TaskEvent = { id: number; taskId: string; timestamp: string; stream: 'stdout' | 'stderr' | 'system'; text: string };
+export type TaskEvent = {
+  id: number;
+  taskId: string;
+  timestamp: string;
+  stream: 'stdout' | 'stderr' | 'system';
+  text: string;
+};
 export type ManagedService = {
   id: string;
   name: string;
@@ -11,13 +17,56 @@ export type ManagedService = {
   createdAt: string;
   updatedAt: string;
 };
-export type ManagedServiceEvent = { id: number; serviceId: string; timestamp: string; stream: 'stdout' | 'stderr' | 'system'; text: string };
+export type ManagedServiceEvent = {
+  id: number;
+  serviceId: string;
+  timestamp: string;
+  stream: 'stdout' | 'stderr' | 'system';
+  text: string;
+};
+export type JiraIssueInput = {
+  jiraId: string;
+  jiraKey: string;
+  projectKey: string;
+  summary: string;
+  description?: string | null;
+  issueType?: string | null;
+  status: string;
+  statusCategory: string;
+  assigneeName?: string | null;
+  priority?: string | null;
+  sprint?: string | null;
+  dueDate?: string | null;
+  jiraUpdatedAt: string;
+  syncedAt: string;
+  rawHash: string;
+};
+export type JiraSettings = {
+  jiraType: 'cloud' | 'data_center';
+  baseUrl: string;
+  jql: string;
+  allowedProjects: string[];
+  syncMode: 'manual' | 'interval';
+  syncIntervalMinutes: number;
+  staleDays: number;
+  updatedAt: string;
+};
 
 type DatabaseConfig = { host: string; port: number; user: string; password: string; database: string };
 type TaskRow = RowDataPacket & Record<string, unknown>;
 
 const columnFor = (key: string) =>
-  ({ status: 'status', startedAt: 'started_at', finishedAt: 'finished_at', durationMs: 'duration_ms', exitCode: 'exit_code', errorCode: 'error_code', errorMessage: 'error_message' } as Record<string, string>)[key];
+  (
+    ({
+      status: 'status',
+      startedAt: 'started_at',
+      finishedAt: 'finished_at',
+      durationMs: 'duration_ms',
+      exitCode: 'exit_code',
+      errorCode: 'error_code',
+      errorMessage: 'error_message',
+    }) as Record<string, string>
+  )[key];
 
 export class AuditDatabase {
   private readonly pool: Pool;
@@ -66,25 +115,210 @@ export class AuditDatabase {
         id BIGINT AUTO_INCREMENT PRIMARY KEY, service_id VARCHAR(80) NOT NULL, timestamp VARCHAR(40) NOT NULL,
         stream VARCHAR(16) NOT NULL, text TEXT NOT NULL, KEY managed_service_events_service_id_id (service_id, id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `
+      CREATE TABLE IF NOT EXISTS jira_issues (
+        jira_id VARCHAR(80) NOT NULL, jira_key VARCHAR(80) PRIMARY KEY, project_key VARCHAR(80) NOT NULL,
+        summary VARCHAR(500) NOT NULL, description TEXT, issue_type VARCHAR(100), status VARCHAR(100) NOT NULL,
+        status_category VARCHAR(40) NOT NULL, assignee_name VARCHAR(255), priority VARCHAR(80), sprint VARCHAR(255),
+        due_date VARCHAR(40), jira_updated_at VARCHAR(40) NOT NULL, synced_at VARCHAR(40) NOT NULL, raw_hash VARCHAR(64) NOT NULL,
+        KEY jira_issues_project_status (project_key, status), KEY jira_issues_updated (jira_updated_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `
+      CREATE TABLE IF NOT EXISTS jira_task_metadata (
+        jira_key VARCHAR(80) PRIMARY KEY, report_note TEXT, internal_category VARCHAR(120), block_reason TEXT,
+        highlight TINYINT(1) NOT NULL DEFAULT 0, risk TINYINT(1) NOT NULL DEFAULT 0,
+        created_by VARCHAR(255) NOT NULL, updated_by VARCHAR(255) NOT NULL, created_at VARCHAR(40) NOT NULL,
+        updated_at VARCHAR(40) NOT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `
+      CREATE TABLE IF NOT EXISTS jira_resources (
+        id VARCHAR(80) PRIMARY KEY, name VARCHAR(200) NOT NULL, url VARCHAR(2048) NOT NULL, type VARCHAR(40) NOT NULL,
+        jira_key VARCHAR(80), owner VARCHAR(255) NOT NULL, visibility VARCHAR(40) NOT NULL, description TEXT,
+        created_by VARCHAR(255) NOT NULL, created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL,
+        KEY jira_resources_jira_key (jira_key), KEY jira_resources_updated (updated_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `
+      CREATE TABLE IF NOT EXISTS jira_settings (
+        id TINYINT PRIMARY KEY, jira_type VARCHAR(20) NOT NULL, base_url VARCHAR(500) NOT NULL, jql TEXT NOT NULL,
+        allowed_projects VARCHAR(500) NOT NULL, sync_mode VARCHAR(20) NOT NULL, sync_interval_minutes INT NOT NULL,
+        stale_days INT NOT NULL, updated_at VARCHAR(40) NOT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `
+      CREATE TABLE IF NOT EXISTS jira_sync_runs (
+        id VARCHAR(80) PRIMARY KEY, source VARCHAR(30) NOT NULL, started_at VARCHAR(40) NOT NULL, finished_at VARCHAR(40),
+        status VARCHAR(30) NOT NULL, created_count INT NOT NULL DEFAULT 0, updated_count INT NOT NULL DEFAULT 0,
+        unchanged_count INT NOT NULL DEFAULT 0, failed_count INT NOT NULL DEFAULT 0, error_summary TEXT,
+        KEY jira_sync_runs_started (started_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `
+      CREATE TABLE IF NOT EXISTS jira_audit_logs (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY, actor VARCHAR(255) NOT NULL, action VARCHAR(120) NOT NULL,
+        target_type VARCHAR(80) NOT NULL, target_id VARCHAR(80) NOT NULL, before_value LONGTEXT, after_value LONGTEXT,
+        result VARCHAR(30) NOT NULL, created_at VARCHAR(40) NOT NULL, KEY jira_audit_created (created_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
     ];
     for (const statement of statements) await this.pool.query(statement);
+    await this.seedJiraWorkspace();
+  }
+
+  private async seedJiraWorkspace() {
+    const now = new Date();
+    const iso = (daysAgo = 0) => new Date(now.getTime() - daysAgo * 86_400_000).toISOString();
+    await this.pool.execute(
+      `INSERT IGNORE INTO jira_settings
+       (id, jira_type, base_url, jql, allowed_projects, sync_mode, sync_interval_minutes, stale_days, updated_at)
+       VALUES (1, 'cloud', 'https://your-company.atlassian.net', 'project = MEMBER ORDER BY updated DESC',
+       '["MEMBER"]', 'manual', 30, 5, ?)`,
+      [iso()]
+    );
+    const [countRows] = await this.pool.query<Array<RowDataPacket & { count: number }>>(
+      'SELECT COUNT(*) AS count FROM jira_issues'
+    );
+    if (Number(countRows[0]?.count ?? 0) > 0) return;
+    const samples: JiraIssueInput[] = [
+      [
+        '100142',
+        'MEM-142',
+        'Investigate incorrect membership status',
+        'Review',
+        'indeterminate',
+        'An',
+        'High',
+        'Sprint 24',
+        0,
+        'Investigation',
+      ],
+      [
+        '100137',
+        'MEM-137',
+        'Confirm renewal business rule with BA',
+        'In Progress',
+        'indeterminate',
+        'Bình',
+        'Medium',
+        'Sprint 24',
+        1,
+        'Q&A',
+      ],
+      [
+        '100129',
+        'MEM-129',
+        'Integrate member event with Payment Service',
+        'Blocked',
+        'indeterminate',
+        'Chi',
+        'Highest',
+        'Sprint 24',
+        2,
+        'Integration',
+      ],
+      [
+        '100124',
+        'MEM-124',
+        'Update customer response guideline',
+        'To Do',
+        'new',
+        'Dũng',
+        'Low',
+        'Backlog',
+        6,
+        'Guideline',
+      ],
+      [
+        '100118',
+        'MEM-118',
+        'Resolve duplicated member profile',
+        'Done',
+        'done',
+        'Dũng',
+        'High',
+        'Sprint 24',
+        2,
+        'Bug fix',
+      ],
+      [
+        '100111',
+        'MEM-111',
+        'Analyse missing benefit history',
+        'In Progress',
+        'indeterminate',
+        'An',
+        'Medium',
+        'Sprint 24',
+        8,
+        'Investigation',
+      ],
+    ].map(
+      ([jiraId, jiraKey, summary, status, statusCategory, assigneeName, priority, sprint, daysAgo, category]) =>
+        ({
+          jiraId: String(jiraId),
+          jiraKey: String(jiraKey),
+          projectKey: 'MEMBER',
+          summary: String(summary),
+          status: String(status),
+          statusCategory: String(statusCategory),
+          assigneeName: String(assigneeName),
+          priority: String(priority),
+          sprint: String(sprint),
+          dueDate: new Date(now.getTime() + (7 - Number(daysAgo)) * 86_400_000).toISOString().slice(0, 10),
+          jiraUpdatedAt: iso(Number(daysAgo)),
+          syncedAt: iso(),
+          rawHash: `sample-${jiraKey}`,
+          description: null,
+          issueType: 'Task',
+          internalCategory: String(category),
+        }) as JiraIssueInput & { internalCategory: string }
+    );
+    await this.upsertJiraIssues(samples);
+    for (const sample of samples as Array<JiraIssueInput & { internalCategory?: string }>) {
+      await this.pool.execute(
+        `INSERT IGNORE INTO jira_task_metadata
+         (jira_key, report_note, internal_category, block_reason, highlight, risk, created_by, updated_by, created_at, updated_at)
+         VALUES (?, '', ?, ?, 0, ?, 'system', 'system', ?, ?)`,
+        [
+          sample.jiraKey,
+          sample.internalCategory ?? '',
+          sample.status === 'Blocked' ? 'Phụ thuộc Payment Service ngoài scope' : '',
+          sample.status === 'Blocked' ? 1 : 0,
+          iso(),
+          iso(),
+        ]
+      );
+    }
   }
 
   async createTask(task: Record<string, unknown>) {
     await this.pool.execute(
       'INSERT INTO tasks (id, service_id, action_id, status, actor, request_id, params_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [task.id, task.serviceId, task.actionId, task.status, task.actor, task.requestId, task.paramsJson, task.createdAt] as any[]
+      [
+        task.id,
+        task.serviceId,
+        task.actionId,
+        task.status,
+        task.actor,
+        task.requestId,
+        task.paramsJson,
+        task.createdAt,
+      ] as any[]
     );
   }
 
   async updateTask(id: string, values: Record<string, unknown>) {
-    const entries = Object.entries(values).map(([key, value]) => [columnFor(key), value] as const).filter((entry): entry is readonly [string, unknown] => Boolean(entry[0]));
+    const entries = Object.entries(values)
+      .map(([key, value]) => [columnFor(key), value] as const)
+      .filter((entry): entry is readonly [string, unknown] => Boolean(entry[0]));
     if (!entries.length) return;
-    await this.pool.query(`UPDATE tasks SET ${entries.map(([column]) => `\`${column}\` = ?`).join(', ')} WHERE id = ?`, [...entries.map(([, value]) => value), id]);
+    await this.pool.query(
+      `UPDATE tasks SET ${entries.map(([column]) => `\`${column}\` = ?`).join(', ')} WHERE id = ?`,
+      [...entries.map(([, value]) => value), id]
+    );
   }
 
   async addEvent(event: Omit<TaskEvent, 'id'>): Promise<TaskEvent> {
-    const [result] = await this.pool.execute<mysql.ResultSetHeader>('INSERT INTO task_events (task_id, timestamp, stream, text) VALUES (?, ?, ?, ?)', [event.taskId, event.timestamp, event.stream, event.text]);
+    const [result] = await this.pool.execute<mysql.ResultSetHeader>(
+      'INSERT INTO task_events (task_id, timestamp, stream, text) VALUES (?, ?, ?, ?)',
+      [event.taskId, event.timestamp, event.stream, event.text]
+    );
     return { ...event, id: Number(result.insertId) };
   }
 
@@ -94,17 +328,32 @@ export class AuditDatabase {
   }
 
   async getEvents(id: string, after = 0) {
-    const [rows] = await this.pool.execute<Array<RowDataPacket & TaskEvent>>('SELECT id, task_id AS taskId, timestamp, stream, text FROM task_events WHERE task_id = ? AND id > ? ORDER BY id', [id, after]);
+    const [rows] = await this.pool.execute<Array<RowDataPacket & TaskEvent>>(
+      'SELECT id, task_id AS taskId, timestamp, stream, text FROM task_events WHERE task_id = ? AND id > ? ORDER BY id',
+      [id, after]
+    );
     return rows;
   }
 
   async listTasks(limit = 100, offset = 0, filters: { service?: string; status?: string; q?: string } = {}) {
     const where: string[] = [];
     const values: unknown[] = [];
-    if (filters.service) { where.push('service_id = ?'); values.push(filters.service); }
-    if (filters.status) { where.push('status = ?'); values.push(filters.status); }
-    if (filters.q?.trim()) { where.push('(id LIKE ? OR service_id LIKE ? OR action_id LIKE ? OR status LIKE ?)'); values.push(...Array(4).fill(`%${filters.q.trim()}%`)); }
-    const [rows] = await this.pool.query<TaskRow[]>(`SELECT * FROM tasks ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC LIMIT ? OFFSET ?`, [...values, limit, offset]);
+    if (filters.service) {
+      where.push('service_id = ?');
+      values.push(filters.service);
+    }
+    if (filters.status) {
+      where.push('status = ?');
+      values.push(filters.status);
+    }
+    if (filters.q?.trim()) {
+      where.push('(id LIKE ? OR service_id LIKE ? OR action_id LIKE ? OR status LIKE ?)');
+      values.push(...Array(4).fill(`%${filters.q.trim()}%`));
+    }
+    const [rows] = await this.pool.query<TaskRow[]>(
+      `SELECT * FROM tasks ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+      [...values, limit, offset]
+    );
     return rows;
   }
 
@@ -114,12 +363,21 @@ export class AuditDatabase {
     try {
       await connection.beginTransaction();
       const placeholders = ids.map(() => '?').join(', ');
-      const [rows] = await connection.execute<Array<RowDataPacket & { id: string }>>(`SELECT id FROM tasks WHERE id IN (${placeholders}) AND status NOT IN ('queued', 'running')`, ids);
+      const [rows] = await connection.execute<Array<RowDataPacket & { id: string }>>(
+        `SELECT id FROM tasks WHERE id IN (${placeholders}) AND status NOT IN ('queued', 'running')`,
+        ids
+      );
       const removable = rows.map((row) => row.id);
-      if (!removable.length) { await connection.commit(); return 0; }
+      if (!removable.length) {
+        await connection.commit();
+        return 0;
+      }
       const removablePlaceholders = removable.map(() => '?').join(', ');
       await connection.execute(`DELETE FROM task_events WHERE task_id IN (${removablePlaceholders})`, removable);
-      const [result] = await connection.execute<mysql.ResultSetHeader>(`DELETE FROM tasks WHERE id IN (${removablePlaceholders})`, removable);
+      const [result] = await connection.execute<mysql.ResultSetHeader>(
+        `DELETE FROM tasks WHERE id IN (${removablePlaceholders})`,
+        removable
+      );
       await connection.commit();
       return result.affectedRows;
     } catch (error) {
@@ -131,33 +389,65 @@ export class AuditDatabase {
   }
 
   async listSavedSpannerQueries(instanceId: string, databaseId: string) {
-    const [rows] = await this.pool.execute('SELECT id, name, instance_id AS instanceId, database_id AS databaseId, query_sql AS `sql`, created_at AS createdAt, updated_at AS updatedAt FROM spanner_saved_queries WHERE instance_id = ? AND database_id = ? ORDER BY updated_at DESC', [instanceId, databaseId]);
+    const [rows] = await this.pool.execute(
+      'SELECT id, name, instance_id AS instanceId, database_id AS databaseId, query_sql AS `sql`, created_at AS createdAt, updated_at AS updatedAt FROM spanner_saved_queries WHERE instance_id = ? AND database_id = ? ORDER BY updated_at DESC',
+      [instanceId, databaseId]
+    );
     return rows;
   }
 
-  async saveSpannerQuery(query: { id: string; name: string; instanceId: string; databaseId: string; sql: string; createdAt: string; updatedAt: string }) {
-    await this.pool.execute('INSERT INTO spanner_saved_queries (id, name, instance_id, database_id, query_sql, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), instance_id = VALUES(instance_id), database_id = VALUES(database_id), query_sql = VALUES(query_sql), updated_at = VALUES(updated_at)', [query.id, query.name, query.instanceId, query.databaseId, query.sql, query.createdAt, query.updatedAt]);
+  async saveSpannerQuery(query: {
+    id: string;
+    name: string;
+    instanceId: string;
+    databaseId: string;
+    sql: string;
+    createdAt: string;
+    updatedAt: string;
+  }) {
+    await this.pool.execute(
+      'INSERT INTO spanner_saved_queries (id, name, instance_id, database_id, query_sql, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), instance_id = VALUES(instance_id), database_id = VALUES(database_id), query_sql = VALUES(query_sql), updated_at = VALUES(updated_at)',
+      [query.id, query.name, query.instanceId, query.databaseId, query.sql, query.createdAt, query.updatedAt]
+    );
     return query;
   }
 
   async deleteSavedSpannerQuery(id: string) {
-    const [result] = await this.pool.execute<mysql.ResultSetHeader>('DELETE FROM spanner_saved_queries WHERE id = ?', [id]);
+    const [result] = await this.pool.execute<mysql.ResultSetHeader>('DELETE FROM spanner_saved_queries WHERE id = ?', [
+      id,
+    ]);
     return result.affectedRows > 0;
   }
 
   async listManagedServices() {
-    const [rows] = await this.pool.query<Array<RowDataPacket & { envJson: string }>>('SELECT id, name, runtime, working_dir AS workingDir, env_json AS envJson, created_at AS createdAt, updated_at AS updatedAt FROM managed_services ORDER BY name');
+    const [rows] = await this.pool.query<Array<RowDataPacket & { envJson: string }>>(
+      'SELECT id, name, runtime, working_dir AS workingDir, env_json AS envJson, created_at AS createdAt, updated_at AS updatedAt FROM managed_services ORDER BY name'
+    );
     return rows.map(({ envJson, ...service }) => ({ ...service, env: JSON.parse(envJson) })) as ManagedService[];
   }
 
   async getManagedService(id: string) {
-    const [rows] = await this.pool.execute<Array<RowDataPacket & { envJson: string }>>('SELECT id, name, runtime, working_dir AS workingDir, env_json AS envJson, created_at AS createdAt, updated_at AS updatedAt FROM managed_services WHERE id = ?', [id]);
+    const [rows] = await this.pool.execute<Array<RowDataPacket & { envJson: string }>>(
+      'SELECT id, name, runtime, working_dir AS workingDir, env_json AS envJson, created_at AS createdAt, updated_at AS updatedAt FROM managed_services WHERE id = ?',
+      [id]
+    );
     const row = rows[0];
     return row ? ({ ...row, env: JSON.parse(row.envJson) } as unknown as ManagedService) : undefined;
   }
 
   async saveManagedService(service: ManagedService) {
-    await this.pool.execute('INSERT INTO managed_services (id, name, runtime, working_dir, env_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), runtime = VALUES(runtime), working_dir = VALUES(working_dir), env_json = VALUES(env_json), updated_at = VALUES(updated_at)', [service.id, service.name, service.runtime, service.workingDir, JSON.stringify(service.env), service.createdAt, service.updatedAt]);
+    await this.pool.execute(
+      'INSERT INTO managed_services (id, name, runtime, working_dir, env_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), runtime = VALUES(runtime), working_dir = VALUES(working_dir), env_json = VALUES(env_json), updated_at = VALUES(updated_at)',
+      [
+        service.id,
+        service.name,
+        service.runtime,
+        service.workingDir,
+        JSON.stringify(service.env),
+        service.createdAt,
+        service.updatedAt,
+      ]
+    );
     return service;
   }
 
@@ -167,12 +457,329 @@ export class AuditDatabase {
   }
 
   async addManagedServiceEvent(event: Omit<ManagedServiceEvent, 'id'>) {
-    const [result] = await this.pool.execute<mysql.ResultSetHeader>('INSERT INTO managed_service_events (service_id, timestamp, stream, text) VALUES (?, ?, ?, ?)', [event.serviceId, event.timestamp, event.stream, event.text]);
+    const [result] = await this.pool.execute<mysql.ResultSetHeader>(
+      'INSERT INTO managed_service_events (service_id, timestamp, stream, text) VALUES (?, ?, ?, ?)',
+      [event.serviceId, event.timestamp, event.stream, event.text]
+    );
     return { ...event, id: Number(result.insertId) };
   }
 
   async listManagedServiceEvents(serviceId: string, limit = 100) {
-    const [rows] = await this.pool.execute<Array<RowDataPacket & ManagedServiceEvent>>('SELECT id, service_id AS serviceId, timestamp, stream, text FROM managed_service_events WHERE service_id = ? ORDER BY id DESC LIMIT ?', [serviceId, limit]);
+    const [rows] = await this.pool.execute<Array<RowDataPacket & ManagedServiceEvent>>(
+      'SELECT id, service_id AS serviceId, timestamp, stream, text FROM managed_service_events WHERE service_id = ? ORDER BY id DESC LIMIT ?',
+      [serviceId, limit]
+    );
     return rows.reverse();
+  }
+
+  async listJiraIssues(
+    filters: { q?: string; status?: string; assignee?: string; priority?: string; sprint?: string } = {}
+  ) {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    if (filters.q?.trim()) {
+      where.push('(i.jira_key LIKE ? OR i.summary LIKE ?)');
+      values.push(`%${filters.q.trim()}%`, `%${filters.q.trim()}%`);
+    }
+    for (const [key, column] of [
+      ['status', 'i.status'],
+      ['assignee', 'i.assignee_name'],
+      ['priority', 'i.priority'],
+      ['sprint', 'i.sprint'],
+    ] as const) {
+      if (filters[key]) {
+        where.push(`${column} = ?`);
+        values.push(filters[key]);
+      }
+    }
+    const [rows] = await this.pool.query<TaskRow[]>(
+      `SELECT i.jira_id AS jiraId, i.jira_key AS jiraKey, i.project_key AS projectKey, i.summary,
+       i.description, i.issue_type AS issueType, i.status, i.status_category AS statusCategory,
+       i.assignee_name AS assigneeName, i.priority, i.sprint, i.due_date AS dueDate,
+       i.jira_updated_at AS jiraUpdatedAt, i.synced_at AS syncedAt,
+       m.report_note AS reportNote, m.internal_category AS internalCategory, m.block_reason AS blockReason,
+       COALESCE(m.highlight, 0) AS highlight, COALESCE(m.risk, 0) AS risk
+       FROM jira_issues i LEFT JOIN jira_task_metadata m ON m.jira_key = i.jira_key
+       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+       ORDER BY i.jira_updated_at DESC LIMIT 500`,
+      values
+    );
+    return rows;
+  }
+
+  async getJiraIssue(jiraKey: string) {
+    const rows = await this.listJiraIssues({ q: jiraKey });
+    return rows.find((row: any) => row.jiraKey === jiraKey);
+  }
+
+  async jiraDashboard(staleDays: number) {
+    const cutoff = new Date(Date.now() - staleDays * 86_400_000).toISOString();
+    const weekStart = new Date(Date.now() - 7 * 86_400_000).toISOString();
+    const [counts] = await this.pool.execute<Array<RowDataPacket & Record<string, number>>>(
+      `SELECT COUNT(*) AS total,
+       SUM(status_category <> 'done') AS open,
+       SUM(status_category <> 'done' AND LOWER(status) LIKE '%progress%') AS inProgress,
+       SUM(LOWER(status) LIKE '%block%') AS blocked,
+       SUM(status_category = 'done' AND jira_updated_at >= ?) AS doneThisWeek,
+       SUM(status_category <> 'done' AND jira_updated_at < ?) AS stale,
+       SUM(status_category <> 'done' AND due_date IS NOT NULL AND due_date < CURDATE()) AS overdue
+       FROM jira_issues`,
+      [weekStart, cutoff]
+    );
+    const [syncRows] = await this.pool.query<TaskRow[]>(
+      'SELECT * FROM jira_sync_runs ORDER BY started_at DESC LIMIT 1'
+    );
+    const [resources] = await this.pool.query<TaskRow[]>(
+      'SELECT id, name, url, type, jira_key AS jiraKey, owner, visibility, updated_at AS updatedAt FROM jira_resources ORDER BY updated_at DESC LIMIT 5'
+    );
+    return {
+      metrics: counts[0],
+      lastSync: syncRows[0] ?? null,
+      recentIssues: (await this.listJiraIssues()).slice(0, 5),
+      resources,
+    };
+  }
+
+  async saveJiraMetadata(
+    jiraKey: string,
+    metadata: { reportNote: string; internalCategory: string; blockReason: string; highlight: boolean; risk: boolean },
+    actor: string
+  ) {
+    const now = new Date().toISOString();
+    await this.pool.execute(
+      `INSERT INTO jira_task_metadata
+       (jira_key, report_note, internal_category, block_reason, highlight, risk, created_by, updated_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE report_note = VALUES(report_note), internal_category = VALUES(internal_category),
+       block_reason = VALUES(block_reason), highlight = VALUES(highlight), risk = VALUES(risk),
+       updated_by = VALUES(updated_by), updated_at = VALUES(updated_at)`,
+      [
+        jiraKey,
+        metadata.reportNote,
+        metadata.internalCategory,
+        metadata.blockReason,
+        metadata.highlight ? 1 : 0,
+        metadata.risk ? 1 : 0,
+        actor,
+        actor,
+        now,
+        now,
+      ]
+    );
+    return this.getJiraIssue(jiraKey);
+  }
+
+  async upsertJiraIssues(issues: JiraIssueInput[]) {
+    let created = 0,
+      updated = 0,
+      unchanged = 0;
+    const connection = await this.pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      for (const issue of issues) {
+        const [current] = await connection.execute<Array<RowDataPacket & { rawHash: string }>>(
+          'SELECT raw_hash AS rawHash FROM jira_issues WHERE jira_key = ?',
+          [issue.jiraKey]
+        );
+        if (!current.length) created += 1;
+        else if (current[0].rawHash === issue.rawHash) unchanged += 1;
+        else updated += 1;
+        await connection.execute(
+          `INSERT INTO jira_issues
+           (jira_id, jira_key, project_key, summary, description, issue_type, status, status_category,
+            assignee_name, priority, sprint, due_date, jira_updated_at, synced_at, raw_hash)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE jira_id = VALUES(jira_id), project_key = VALUES(project_key), summary = VALUES(summary),
+           description = VALUES(description), issue_type = VALUES(issue_type), status = VALUES(status),
+           status_category = VALUES(status_category), assignee_name = VALUES(assignee_name), priority = VALUES(priority),
+           sprint = VALUES(sprint), due_date = VALUES(due_date), jira_updated_at = VALUES(jira_updated_at),
+           synced_at = VALUES(synced_at), raw_hash = VALUES(raw_hash)`,
+          [
+            issue.jiraId,
+            issue.jiraKey,
+            issue.projectKey,
+            issue.summary,
+            issue.description ?? null,
+            issue.issueType ?? null,
+            issue.status,
+            issue.statusCategory,
+            issue.assigneeName ?? null,
+            issue.priority ?? null,
+            issue.sprint ?? null,
+            issue.dueDate ?? null,
+            issue.jiraUpdatedAt,
+            issue.syncedAt,
+            issue.rawHash,
+          ]
+        );
+      }
+      await connection.commit();
+      return { created, updated, unchanged };
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+
+  async getJiraSettings(): Promise<JiraSettings> {
+    const [rows] = await this.pool.query<TaskRow[]>('SELECT * FROM jira_settings WHERE id = 1');
+    const row: any = rows[0];
+    return {
+      jiraType: row.jira_type,
+      baseUrl: row.base_url,
+      jql: row.jql,
+      allowedProjects: JSON.parse(row.allowed_projects || '[]'),
+      syncMode: row.sync_mode,
+      syncIntervalMinutes: Number(row.sync_interval_minutes),
+      staleDays: Number(row.stale_days),
+      updatedAt: row.updated_at,
+    };
+  }
+
+  async saveJiraSettings(settings: JiraSettings) {
+    await this.pool.execute(
+      `UPDATE jira_settings SET jira_type = ?, base_url = ?, jql = ?, allowed_projects = ?, sync_mode = ?,
+       sync_interval_minutes = ?, stale_days = ?, updated_at = ? WHERE id = 1`,
+      [
+        settings.jiraType,
+        settings.baseUrl,
+        settings.jql,
+        JSON.stringify(settings.allowedProjects),
+        settings.syncMode,
+        settings.syncIntervalMinutes,
+        settings.staleDays,
+        settings.updatedAt,
+      ]
+    );
+    return this.getJiraSettings();
+  }
+
+  async listJiraResources() {
+    const [rows] = await this.pool.query<TaskRow[]>(
+      `SELECT id, name, url, type, jira_key AS jiraKey, owner, visibility, description,
+       created_by AS createdBy, created_at AS createdAt, updated_at AS updatedAt
+       FROM jira_resources ORDER BY updated_at DESC`
+    );
+    return rows;
+  }
+
+  async createJiraResource(resource: Record<string, string | null>) {
+    await this.pool.execute(
+      `INSERT INTO jira_resources (id, name, url, type, jira_key, owner, visibility, description, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        resource.id,
+        resource.name,
+        resource.url,
+        resource.type,
+        resource.jiraKey || null,
+        resource.owner,
+        resource.visibility,
+        resource.description || null,
+        resource.createdBy,
+        resource.createdAt,
+        resource.updatedAt,
+      ]
+    );
+    return resource;
+  }
+
+  async updateJiraResource(id: string, resource: Record<string, string | null>) {
+    const [result] = await this.pool.execute<mysql.ResultSetHeader>(
+      `UPDATE jira_resources SET name = ?, url = ?, type = ?, jira_key = ?, owner = ?, visibility = ?,
+       description = ?, updated_at = ? WHERE id = ?`,
+      [
+        resource.name,
+        resource.url,
+        resource.type,
+        resource.jiraKey || null,
+        resource.owner,
+        resource.visibility,
+        resource.description || null,
+        resource.updatedAt,
+        id,
+      ]
+    );
+    return result.affectedRows > 0;
+  }
+
+  async deleteJiraResource(id: string) {
+    const [result] = await this.pool.execute<mysql.ResultSetHeader>('DELETE FROM jira_resources WHERE id = ?', [id]);
+    return result.affectedRows > 0;
+  }
+
+  async addJiraAudit(
+    actor: string,
+    action: string,
+    targetType: string,
+    targetId: string,
+    before: unknown,
+    after: unknown,
+    result = 'success'
+  ) {
+    await this.pool.execute(
+      `INSERT INTO jira_audit_logs (actor, action, target_type, target_id, before_value, after_value, result, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        actor,
+        action,
+        targetType,
+        targetId,
+        before == null ? null : JSON.stringify(before),
+        after == null ? null : JSON.stringify(after),
+        result,
+        new Date().toISOString(),
+      ]
+    );
+  }
+
+  async listJiraAudit(limit = 30) {
+    const [rows] = await this.pool.execute<TaskRow[]>(
+      `SELECT id, actor, action, target_type AS targetType, target_id AS targetId, result, created_at AS createdAt
+       FROM jira_audit_logs ORDER BY id DESC LIMIT ?`,
+      [limit]
+    );
+    return rows;
+  }
+
+  async createJiraSyncRun(id: string, source: string, startedAt: string) {
+    await this.pool.execute(`INSERT INTO jira_sync_runs (id, source, started_at, status) VALUES (?, ?, ?, 'running')`, [
+      id,
+      source,
+      startedAt,
+    ]);
+  }
+
+  async finishJiraSyncRun(
+    id: string,
+    values: { status: string; created?: number; updated?: number; unchanged?: number; failed?: number; error?: string }
+  ) {
+    await this.pool.execute(
+      `UPDATE jira_sync_runs SET finished_at = ?, status = ?, created_count = ?, updated_count = ?,
+       unchanged_count = ?, failed_count = ?, error_summary = ? WHERE id = ?`,
+      [
+        new Date().toISOString(),
+        values.status,
+        values.created ?? 0,
+        values.updated ?? 0,
+        values.unchanged ?? 0,
+        values.failed ?? 0,
+        values.error ?? null,
+        id,
+      ]
+    );
+  }
+
+  async listJiraSyncRuns(limit = 20) {
+    const [rows] = await this.pool.execute<TaskRow[]>(
+      `SELECT id, source, started_at AS startedAt, finished_at AS finishedAt, status,
+       created_count AS createdCount, updated_count AS updatedCount, unchanged_count AS unchangedCount,
+       failed_count AS failedCount, error_summary AS errorSummary
+       FROM jira_sync_runs ORDER BY started_at DESC LIMIT ?`,
+      [limit]
+    );
+    return rows;
   }
 }

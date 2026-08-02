@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { config } from './config.js';
 import { AuditDatabase } from './database.js';
 import { Infrastructure } from './infra.js';
+import { registerJiraRoutes } from './jira-routes.js';
 import { ManagedServiceRunner } from './managed-services.js';
 import { TaskRunner } from './task-runner.js';
 
@@ -24,6 +25,10 @@ const infra = new Infrastructure(config);
 const tasks = new TaskRunner(database);
 const app = Fastify({ logger: true, genReqId: () => randomUUID() });
 const managedServices = new ManagedServiceRunner(database, config.WORKSPACE_DIR);
+
+app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'buffer' }, (_request, body, done) => {
+  done(null, body);
+});
 
 const normaliseOrigin = (value: string) => {
   try {
@@ -101,6 +106,45 @@ async function proxyKafkaUi(request: FastifyRequest, reply: any) {
   return reply.code(upstream.status).send(responseBody);
 }
 
+async function proxyInternalUi(request: FastifyRequest, reply: any, internalUrl: string) {
+  const target = new URL(request.raw.url ?? '/', internalUrl);
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(request.headers)) {
+    if (value === undefined || ['host', 'content-length', 'accept-encoding', 'origin'].includes(key.toLowerCase()))
+      continue;
+    headers.set(key, Array.isArray(value) ? value.join(', ') : value);
+  }
+  headers.set('accept-encoding', 'identity');
+  const forwardedHost = firstHeaderValue(request.headers['x-forwarded-host']) || firstHeaderValue(request.headers.host);
+  const forwardedProtocol = firstHeaderValue(request.headers['x-forwarded-proto']) || request.protocol || 'http';
+  if (forwardedHost) headers.set('x-forwarded-host', forwardedHost);
+  headers.set('x-forwarded-proto', forwardedProtocol);
+
+  const requestBody: BodyInit | undefined =
+    request.body === undefined
+      ? undefined
+      : Buffer.isBuffer(request.body)
+        ? new Uint8Array(request.body)
+        : typeof request.body === 'string'
+          ? request.body
+          : JSON.stringify(request.body);
+  const upstream = await fetch(target, { method: request.method, headers, body: requestBody, redirect: 'manual' });
+  const ignoredHeaders = new Set([
+    'connection',
+    'content-length',
+    'content-security-policy',
+    'set-cookie',
+    'transfer-encoding',
+    'x-frame-options',
+  ]);
+  upstream.headers.forEach((value, key) => {
+    if (!ignoredHeaders.has(key.toLowerCase())) reply.header(key, value);
+  });
+  const cookies = upstream.headers.getSetCookie();
+  if (cookies.length) reply.header('set-cookie', cookies);
+  return reply.code(upstream.status).send(Buffer.from(await upstream.arrayBuffer()));
+}
+
 await app.register(cors, {
   origin: (origin, callback) => callback(null, !origin || allowedOrigins.has(normaliseOrigin(origin) ?? origin)),
   credentials: false,
@@ -133,6 +177,7 @@ app.setErrorHandler((error: any, request, reply) => {
 
 const actorFor = (request: any) =>
   config.TRUST_CODER_PROXY ? String(request.headers[config.CODER_ACTOR_HEADER] ?? 'local-user') : 'local-user';
+registerJiraRoutes(app, database, config, actorFor);
 const requireService = (id: string) => {
   const service = infra.getService(id);
   if (!service) throw Object.assign(new Error('Unknown service'), { statusCode: 404, code: 'SERVICE_NOT_FOUND' });
@@ -334,7 +379,8 @@ for (const action of ['start', 'stop', 'restart'] as const) {
 }
 app.get('/api/app-services/:serviceId/logs/events', async (request, reply) => {
   const { serviceId } = managedServiceId.parse(request.params);
-  if (!(await managedServices.get(serviceId))) throw Object.assign(new Error('Managed service not found'), { statusCode: 404 });
+  if (!(await managedServices.get(serviceId)))
+    throw Object.assign(new Error('Managed service not found'), { statusCode: 404 });
   const { tail } = z.object({ tail: z.coerce.number().int().min(1).max(1000).default(100) }).parse(request.query);
   const channel = sse(reply);
   (await managedServices.eventsFor(serviceId, tail)).forEach((event) => channel.send('log', event, event.id));
@@ -526,6 +572,52 @@ app.route({
   handler: proxyKafkaUi,
 });
 app.get(
+  '/api/keycloak/status',
+  async (request) => (await tracked(request, 'keycloak', 'keycloak.status', {}, () => infra.keycloakStatus())).result
+);
+app.get('/api/keycloak/open-url', async () => ({
+  url: config.KEYCLOAK_OPEN_URL || '/keycloak-embed/admin/master/console/',
+}));
+app.get(
+  '/api/mailhog/status',
+  async (request) => (await tracked(request, 'mailhog', 'mailhog.status', {}, () => infra.mailhogStatus())).result
+);
+app.get('/api/mailhog/open-url', async () => ({ url: config.MAILHOG_OPEN_URL || '/mailhog-embed/' }));
+for (const url of ['/keycloak-embed', '/keycloak-embed/*']) {
+  app.route({
+    method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    url,
+    handler: (request, reply) => proxyInternalUi(request, reply, config.KEYCLOAK_INTERNAL_URL),
+  });
+}
+for (const url of ['/mailhog-embed', '/mailhog-embed/*']) {
+  app.route({
+    method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    url,
+    handler: (request, reply) => proxyInternalUi(request, reply, config.MAILHOG_INTERNAL_URL),
+  });
+}
+app.get(
+  '/api/bigquery/status',
+  async (request) => (await tracked(request, 'bigquery', 'bigquery.status', {}, () => infra.bigQueryStatus())).result
+);
+app.get(
+  '/api/bigquery/datasets',
+  async (request) =>
+    (await tracked(request, 'bigquery', 'bigquery.datasets', {}, () => infra.bigQueryDatasets())).result
+);
+app.get('/api/bigquery/datasets/:dataset/tables', async (request) => {
+  const { dataset } = z.object({ dataset: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,1023}$/) }).parse(request.params);
+  return (await tracked(request, 'bigquery', 'bigquery.tables', { dataset }, () => infra.bigQueryTables(dataset)))
+    .result;
+});
+app.post('/api/bigquery/query', async (request) => {
+  const body = z.object({ sql: z.string().min(1).max(100_000) }).parse(request.body);
+  return (
+    await tracked(request, 'bigquery', 'bigquery.runReadQuery', { sql: body.sql }, () => infra.bigQueryQuery(body.sql))
+  ).result;
+});
+app.get(
   '/api/redash/status',
   async (request) => (await tracked(request, 'redash', 'redash.status', {}, () => infra.redashStatus())).result
 );
@@ -611,7 +703,12 @@ app.get('/api/spanner/saved-queries', async (request) => {
 app.post('/api/spanner/saved-queries', async (request) => {
   const body = savedSpannerQuery.parse(request.body);
   const now = new Date().toISOString();
-  return await database.saveSpannerQuery({ id: `spanner-query-${randomUUID()}`, ...body, createdAt: now, updatedAt: now });
+  return await database.saveSpannerQuery({
+    id: `spanner-query-${randomUUID()}`,
+    ...body,
+    createdAt: now,
+    updatedAt: now,
+  });
 });
 app.delete('/api/spanner/saved-queries/:queryId', async (request) => {
   const { queryId } = z.object({ queryId: z.string().min(1) }).parse(request.params);
