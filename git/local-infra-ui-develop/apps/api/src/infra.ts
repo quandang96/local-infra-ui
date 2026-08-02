@@ -73,6 +73,33 @@ export const defaultServices: ServiceDefinition[] = [
     ports: ['9010', '9020'],
     runtimeMode: 'daemon',
   },
+  {
+    id: 'keycloak',
+    label: 'Keycloak',
+    compose: 'keycloak',
+    container: 'keycloak',
+    image: 'quay.io/keycloak/keycloak:26.7.0',
+    ports: ['8082'],
+    runtimeMode: 'daemon',
+  },
+  {
+    id: 'mailhog',
+    label: 'MailHog',
+    compose: 'mailhog',
+    container: 'mailhog',
+    image: 'mailhog/mailhog:v1.0.1',
+    ports: ['1025', '8025'],
+    runtimeMode: 'daemon',
+  },
+  {
+    id: 'bigquery',
+    label: 'BigQuery',
+    compose: 'bigquery',
+    container: 'bigquery',
+    image: 'ghcr.io/goccy/bigquery-emulator:0.8.1',
+    ports: ['9050', '9060'],
+    runtimeMode: 'daemon',
+  },
 ];
 
 const serviceCatalogSchema = z.array(
@@ -139,6 +166,25 @@ const identifier = (value: string) => {
       code: 'INVALID_IDENTIFIER',
     });
   return `\`${value}\``;
+};
+
+type BigQueryField = {
+  name: string;
+  type: string;
+  mode?: string;
+  fields?: BigQueryField[];
+};
+
+const bigQueryValue = (cell: any, field: BigQueryField): unknown => {
+  const value = cell?.v;
+  if (value === null || value === undefined) return null;
+  if (field.mode === 'REPEATED' && Array.isArray(value))
+    return value.map((item) => bigQueryValue(item, { ...field, mode: 'NULLABLE' }));
+  if ((field.type === 'RECORD' || field.type === 'STRUCT') && Array.isArray(value.f))
+    return Object.fromEntries(
+      (field.fields ?? []).map((child, index) => [child.name, bigQueryValue(value.f[index], child)])
+    );
+  return value;
 };
 
 export class Infrastructure {
@@ -658,6 +704,113 @@ export class Infrastructure {
       statusCode: response.status,
       durationMs: Date.now() - start,
       openUrl: this.env.KAFKA_UI_OPEN_URL || null,
+    };
+  }
+
+  private async serviceUiStatus(internalUrl: string, path: string, openUrl: string | undefined) {
+    const start = Date.now();
+    const response = await fetch(new URL(path, internalUrl), {
+      signal: AbortSignal.timeout(5_000),
+    });
+    return {
+      available: response.ok,
+      statusCode: response.status,
+      durationMs: Date.now() - start,
+      openUrl: openUrl || null,
+    };
+  }
+
+  keycloakStatus() {
+    return this.serviceUiStatus(
+      this.env.KEYCLOAK_INTERNAL_URL,
+      '/keycloak-embed/realms/master',
+      this.env.KEYCLOAK_OPEN_URL
+    );
+  }
+
+  mailhogStatus() {
+    return this.serviceUiStatus(this.env.MAILHOG_INTERNAL_URL, '/mailhog-embed/', this.env.MAILHOG_OPEN_URL);
+  }
+
+  private async bigQueryRequest<T>(path: string, init?: RequestInit): Promise<T> {
+    const response = await fetch(new URL(path, this.env.BIGQUERY_API_ENDPOINT), {
+      ...init,
+      headers: { 'content-type': 'application/json', ...init?.headers },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) {
+      const details = await response.text();
+      throw Object.assign(new Error(`BigQuery emulator returned HTTP ${response.status}`), {
+        code: 'BIGQUERY_REQUEST_FAILED',
+        details,
+      });
+    }
+    return (await response.json()) as T;
+  }
+
+  async bigQueryStatus() {
+    const start = Date.now();
+    const path = `/bigquery/v2/projects/${encodeURIComponent(this.env.BIGQUERY_PROJECT_ID)}/datasets`;
+    try {
+      await this.bigQueryRequest(path);
+      return {
+        available: true,
+        statusCode: 200,
+        durationMs: Date.now() - start,
+        projectId: this.env.BIGQUERY_PROJECT_ID,
+      };
+    } catch (cause: any) {
+      return {
+        available: false,
+        statusCode: cause?.statusCode ?? 503,
+        durationMs: Date.now() - start,
+        projectId: this.env.BIGQUERY_PROJECT_ID,
+      };
+    }
+  }
+
+  async bigQueryDatasets() {
+    const project = encodeURIComponent(this.env.BIGQUERY_PROJECT_ID);
+    const result = await this.bigQueryRequest<any>(`/bigquery/v2/projects/${project}/datasets`);
+    return (result.datasets ?? []).map((dataset: any) => ({
+      id: dataset.datasetReference?.datasetId ?? '',
+      location: dataset.location ?? null,
+    }));
+  }
+
+  async bigQueryTables(datasetId: string) {
+    const project = encodeURIComponent(this.env.BIGQUERY_PROJECT_ID);
+    const dataset = encodeURIComponent(identifier(datasetId).slice(1, -1));
+    const result = await this.bigQueryRequest<any>(`/bigquery/v2/projects/${project}/datasets/${dataset}/tables`);
+    return (result.tables ?? []).map((entry: any) => ({
+      id: entry.tableReference?.tableId ?? '',
+      type: entry.type ?? 'TABLE',
+    }));
+  }
+
+  async bigQueryQuery(sql: string) {
+    const start = Date.now();
+    const safeSql = allowedReadStatement(sql, ['SELECT', 'WITH', 'EXPLAIN']);
+    const project = encodeURIComponent(this.env.BIGQUERY_PROJECT_ID);
+    const result = await this.bigQueryRequest<any>(`/bigquery/v2/projects/${project}/queries`, {
+      method: 'POST',
+      body: JSON.stringify({ query: safeSql, useLegacySql: false, timeoutMs: 10_000 }),
+    });
+    if (result.errors?.length)
+      throw Object.assign(new Error(result.errors[0]?.message ?? 'BigQuery query failed'), {
+        code: 'BIGQUERY_QUERY_FAILED',
+        details: result.errors,
+      });
+    const fields: BigQueryField[] = result.schema?.fields ?? [];
+    const rows = (result.rows ?? []).map((row: any) =>
+      Object.fromEntries(fields.map((field, index) => [field.name, bigQueryValue(row.f?.[index], field)]))
+    );
+    return {
+      type: 'table' as const,
+      columns: fields.map((field) => ({ key: field.name, label: field.name, dataType: field.type })),
+      rows,
+      metadata: { rowCount: rows.length, durationMs: Date.now() - start, nextCursor: result.pageToken ?? null },
+      sql: safeSql,
     };
   }
 

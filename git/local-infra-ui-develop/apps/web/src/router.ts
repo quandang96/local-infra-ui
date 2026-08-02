@@ -11,6 +11,9 @@ import SystemView from './views/SystemView.vue';
 import DockerToolsView from './views/DockerToolsView.vue';
 import AppServicesView from './views/AppServicesView.vue';
 import ServiceView from './views/ServiceView.vue';
+import EmbeddedUiView from './views/EmbeddedUiView.vue';
+import BigQueryView from './views/BigQueryView.vue';
+import JiraView from './views/JiraView.vue';
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -23,6 +26,32 @@ export const router = createRouter({
     { path: '/kafka', name: 'kafka', component: KafkaView, meta: { title: 'Kafka' } },
     { path: '/kafka-ui', name: 'kafka-ui', component: KafkaUiView, meta: { title: 'Kafka UI' } },
     { path: '/spanner', name: 'spanner', component: SpannerView, meta: { title: 'Spanner' } },
+    {
+      path: '/keycloak',
+      name: 'keycloak',
+      component: EmbeddedUiView,
+      props: {
+        serviceId: 'keycloak',
+        label: 'Keycloak Admin Console',
+        description: 'Native Keycloak UI, proxied through Control Center',
+        embeddedUrl: '/keycloak-embed/admin/master/console/',
+      },
+      meta: { title: 'Keycloak' },
+    },
+    {
+      path: '/mailhog',
+      name: 'mailhog',
+      component: EmbeddedUiView,
+      props: {
+        serviceId: 'mailhog',
+        label: 'MailHog Inbox',
+        description: 'SMTP capture inbox and message inspector',
+        embeddedUrl: '/mailhog-embed/',
+      },
+      meta: { title: 'MailHog' },
+    },
+    { path: '/bigquery', name: 'bigquery', component: BigQueryView, meta: { title: 'BigQuery Emulator' } },
+    { path: '/jira', name: 'jira', component: JiraView, meta: { title: 'Jira Workspace' } },
     { path: '/tasks', name: 'tasks', component: TasksView, meta: { title: 'Task History' } },
     { path: '/system', name: 'system', component: SystemView, meta: { title: 'System' } },
     { path: '/docker', name: 'docker', component: DockerToolsView, meta: { title: 'Docker Tools' } },

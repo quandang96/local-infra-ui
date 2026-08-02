@@ -1,6 +1,6 @@
 # Local Infra Control Center
 
-Web UI nội bộ để vận hành một Docker Compose project trong Coder hoặc môi trường local. Control Center hiển thị trạng thái service, chạy lifecycle Compose, xem log, lưu lịch sử task và cung cấp công cụ cho MySQL/Redash, Datastore, Kafka, Spanner, Docker và application service.
+Web UI nội bộ để vận hành một Docker Compose project trong Coder hoặc môi trường local. Control Center hiển thị trạng thái service, chạy lifecycle Compose, xem log, lưu lịch sử task và cung cấp công cụ cho MySQL/Redash, Datastore, Kafka, Spanner, Keycloak, MailHog, BigQuery, Docker và application service.
 
 Project có thể dùng nguyên trạng với stack mẫu `local-infra` hoặc trỏ tới Compose project khác bằng cấu hình môi trường — không cần sửa mã nguồn cho các service Compose thông thường.
 
@@ -12,6 +12,9 @@ Project có thể dùng nguyên trạng với stack mẫu `local-infra` hoặc t
 - App Services: tạo, sửa, chạy và dừng process Go, Node hoặc Vue trong workspace.
 - Docker Tools chỉ chạy catalog lệnh Docker đã duyệt.
 - Spanner explorer: mở/thu gọn cột theo table, query read-only, chạy phần SQL đang chọn và lưu/mở lại SQL.
+- Nhúng Keycloak Admin Console và MailHog Inbox qua reverse proxy cùng origin.
+- BigQuery emulator explorer: xem dataset/table và chạy GoogleSQL read-only.
+- Jira Workspace: dashboard, issue filters/detail, board, weekly report, resource links, cấu hình và sync Jira read-only.
 - Task History có tìm kiếm, lọc trạng thái và xóa các task đã hoàn thành.
 
 Các màn hình chuyên biệt MySQL, Datastore, Kafka, Kafka UI, Redash và Spanner cần endpoint tương ứng được cấu hình. Các service khác vẫn vận hành qua trang Compose Service chung.
@@ -128,8 +131,22 @@ Các giá trị bên dưới có sẵn trong `.env.example`; thay đổi theo po
 | Kafka         | `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_UI_INTERNAL_URL`, `KAFKA_UI_OPEN_URL`                     |
 | Spanner       | `SPANNER_EMULATOR_HOST`, `SPANNER_PROJECT_ID`, `SPANNER_INSTANCE_ID`, `SPANNER_DATABASE_ID` |
 | Redash        | `REDASH_INTERNAL_URL`, `REDASH_OPEN_URL`                                                    |
+| Keycloak      | `KEYCLOAK_INTERNAL_URL`, `KEYCLOAK_OPEN_URL`                                                |
+| MailHog       | `MAILHOG_INTERNAL_URL`, `MAILHOG_OPEN_URL`                                                  |
+| BigQuery      | `BIGQUERY_API_ENDPOINT`, `BIGQUERY_PROJECT_ID`                                              |
+| Jira          | `JIRA_API_TOKEN`, `JIRA_EMAIL`, `JIRA_REQUEST_TIMEOUT_MS`                                   |
 
 `KAFKA_UI_OPEN_URL` và `REDASH_OPEN_URL` là URL mà browser người dùng có thể mở, thường là URL Coder proxy. Các biến `*_INTERNAL_URL` là URL API container dùng để health check trong Docker network.
+
+Stack mẫu mở Keycloak tại port `8082` (tài khoản dev `admin` / `admin`), MailHog SMTP/UI tại `1025`/`8025`, và BigQuery REST/Storage gRPC tại `9050`/`9060`. BigQuery dùng emulator mã nguồn mở cho development, không phải service chính thức của Google Cloud.
+
+## Jira Workspace
+
+Mục **Jira Workspace** gom tất cả thao tác vào một màn hình với các tab Dashboard, Issues, Board, Reports, Resources và Settings. Lần chạy đầu API tự tạo các bảng `jira_*` trong database MySQL đã cấu hình và thêm một bộ issue mẫu; Jira thật chỉ thay thế phần cache khi người dùng bấm sync hoặc bật interval sync.
+
+Để kết nối Jira Cloud, đặt `JIRA_API_TOKEN` và `JIRA_EMAIL` trong môi trường backend. Jira Data Center dùng `JIRA_API_TOKEN` theo Bearer auth và không cần email. Base URL, Team JQL và allowlist project được lưu từ tab Settings. Token không được nhận hoặc trả về qua API và không được lưu trong MySQL.
+
+Sync hiện là read-only: Jira giữ status, assignee và workflow; MySQL chỉ giữ cache issue cùng report note, internal category, blocker/risk/highlight, resource link, lịch sử sync và audit log. CSV export có chặn ký tự mở đầu có thể kích hoạt công thức bảng tính.
 
 ## Bảo mật và giới hạn
 

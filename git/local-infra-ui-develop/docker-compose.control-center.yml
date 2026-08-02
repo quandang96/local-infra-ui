@@ -35,6 +35,15 @@ services:
       KAFKA_UI_OPEN_URL: ${KAFKA_UI_OPEN_URL:-}
       REDASH_INTERNAL_URL: http://redash:5000
       REDASH_OPEN_URL: ${REDASH_OPEN_URL:-}
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+      KEYCLOAK_OPEN_URL: ${KEYCLOAK_OPEN_URL:-}
+      MAILHOG_INTERNAL_URL: http://mailhog:8025
+      MAILHOG_OPEN_URL: ${MAILHOG_OPEN_URL:-}
+      BIGQUERY_API_ENDPOINT: http://bigquery:9050
+      BIGQUERY_PROJECT_ID: local-project
+      JIRA_API_TOKEN: ${JIRA_API_TOKEN:-}
+      JIRA_EMAIL: ${JIRA_EMAIL:-}
+      JIRA_REQUEST_TIMEOUT_MS: ${JIRA_REQUEST_TIMEOUT_MS:-15000}
       TRUST_CODER_PROXY: ${TRUST_CODER_PROXY:-true}
       CODER_ACTOR_HEADER: ${CODER_ACTOR_HEADER:-x-coder-user}
       # Cross-origin development clients. Override with a comma-separated list when needed.
@@ -87,4 +96,4 @@ networks:
     name: git_default
   shared-db-network:
     external: true
-    name: omnipf-shared-db 
+    name: omnipf-shared-db

@@ -32,6 +32,19 @@ const schema = z.object({
   KAFKA_UI_OPEN_URL: z.string().url().optional().or(z.literal('')),
   REDASH_INTERNAL_URL: z.string().url().default('http://localhost:5000'),
   REDASH_OPEN_URL: z.string().url().optional().or(z.literal('')),
+  KEYCLOAK_INTERNAL_URL: z.string().url().default('http://localhost:8082'),
+  KEYCLOAK_OPEN_URL: z.string().url().optional().or(z.literal('')),
+  MAILHOG_INTERNAL_URL: z.string().url().default('http://localhost:8025'),
+  MAILHOG_OPEN_URL: z.string().url().optional().or(z.literal('')),
+  BIGQUERY_API_ENDPOINT: z.string().url().default('http://localhost:9050'),
+  BIGQUERY_PROJECT_ID: z
+    .string()
+    .regex(/^[a-z][a-z0-9-]{0,62}$/)
+    .default('local-project'),
+  // Jira credentials stay server-side. Leave blank to use the seeded local cache only.
+  JIRA_API_TOKEN: z.string().default(''),
+  JIRA_EMAIL: z.string().email().optional().or(z.literal('')),
+  JIRA_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60_000).default(15_000),
 });
 
 export type Config = z.infer<typeof schema>;
