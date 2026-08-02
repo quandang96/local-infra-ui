@@ -1,0 +1,229 @@
+services:
+  mysql:
+    container_name: mysql-shared
+    image: mysql:5.7
+    platform: linux/amd64
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+      MYSQL_DATABASE: app
+    # GCP の挙動に近づけるための設定
+    command: >
+      mysqld
+      --character-set-server=utf8
+      --collation-server=utf8_general_ci
+      --disabled-storage-engines=MyISAM,BLACKHOLE,FEDERATED,ARCHIVE
+      --innodb-monitor-enable=all
+      --master-info-repository=TABLE
+      --max_connections=4030
+      --performance-schema=OFF
+      --relay_log_info_repository=TABLE
+      --slave_net_timeout=30
+      --slow_query_log=ON
+      --thread_cache_size=48
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root"]
+      interval: 3s
+      timeout: 2s
+      retries: 5
+      start_period: 10s
+    ports:
+    - "3306:3306"
+    volumes:
+      - mysql_shared_data:/var/lib/mysql
+      - ./mysql-init:/docker-entrypoint-initdb.d
+    networks:
+      - shared-db-network
+  redash-postgres:
+    container_name: redash-postgres
+    image: postgres:14-alpine
+    environment:
+      POSTGRES_DB: redash
+      POSTGRES_USER: redash
+      POSTGRES_PASSWORD: redash_strong_password
+    volumes:
+      - redash_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U redash -d redash"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - redash-internal
+
+  redash-redis:
+    container_name: redash-redis
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - redash-internal
+
+  redash:
+    container_name: redash
+    image: redash/redash:10.1.0.b50633
+    depends_on:
+      redash-postgres:
+        condition: service_healthy
+      redash-redis:
+        condition: service_healthy
+    ports:
+      - "5000:5000"
+    expose:
+      - "5000"
+    environment:
+      PYTHONUNBUFFERED: "0"
+      REDASH_LOG_LEVEL: INFO
+      REDASH_REDIS_URL: redis://redash-redis:6379/0
+      REDASH_DATABASE_URL: postgresql://redash:redash_strong_password@redash-postgres:5432/redash
+      REDASH_COOKIE_SECRET: local-redash-cookie-secret-change-for-shared-environments
+      REDASH_SECRET_KEY: replace_with_another_long_random_secret
+      REDASH_CONTENT_SECURITY_POLICY: "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval'; font-src 'self' data:; img-src 'self' http: https: data: blob:; object-src 'none'; frame-ancestors *; frame-src redash.io;"
+      REDASH_FRAME_OPTIONS: ''
+      REDASH_REQUEST_TIMEOUT: 60
+      REDASH_QUERY_TIMEOUT: 30
+    command: server
+    volumes:
+      - ./redash-overrides/mysql.py:/app/redash/query_runner/mysql.py:ro
+    networks:
+      - redash-internal
+      - shared-db-network
+
+  redash-worker:
+    container_name: redash-worker
+    image: redash/redash:10.1.0.b50633
+    depends_on:
+      redash-postgres:
+        condition: service_healthy
+      redash-redis:
+        condition: service_healthy
+    environment:
+      PYTHONUNBUFFERED: "0"
+      REDASH_LOG_LEVEL: INFO
+      REDASH_REDIS_URL: redis://redash-redis:6379/0
+      REDASH_DATABASE_URL: postgresql://redash:redash_strong_password@redash-postgres:5432/redash
+      REDASH_COOKIE_SECRET: replace_with_long_random_secret
+      REDASH_SECRET_KEY: replace_with_another_long_random_secret
+      REDASH_REQUEST_TIMEOUT: 60
+      REDASH_QUERY_TIMEOUT: 30
+    command: worker
+    volumes:
+      - ./redash-overrides/mysql.py:/app/redash/query_runner/mysql.py:ro
+    networks:
+      - redash-internal
+      - shared-db-network
+
+  redash-init:
+    container_name: redash-init
+    image: redash/redash:10.1.0.b50633
+    profiles: ["setup"]
+    depends_on:
+      redash-postgres:
+        condition: service_healthy
+      redash-redis:
+        condition: service_healthy
+    environment:
+      PYTHONUNBUFFERED: "0"
+      REDASH_LOG_LEVEL: INFO
+      REDASH_REDIS_URL: redis://redash-redis:6379/0
+      REDASH_DATABASE_URL: postgresql://redash:redash_strong_password@redash-postgres:5432/redash
+      REDASH_COOKIE_SECRET: replace_with_long_random_secret
+      REDASH_SECRET_KEY: replace_with_another_long_random_secret
+      REDASH_REQUEST_TIMEOUT: 60
+      REDASH_QUERY_TIMEOUT: 30
+    command: create_db
+    networks:
+      - redash-internal
+
+  spanner:
+    container_name: spanner
+    image: gcr.io/cloud-spanner-emulator/emulator
+    ports:
+      - "9010:9010"
+      - "9020:9020"    
+    volumes:
+      - spanner_data:/data
+
+  datastore:
+    image: google/cloud-sdk
+    container_name: datastore
+    ports:
+      - '8085:8085'
+    command:
+      [
+        "gcloud",
+        "beta",
+        "emulators",
+        "datastore",
+        "start",
+        "--host-port",
+        "0.0.0.0:8085"
+      ]
+    environment:
+      - DATASTORE_PROJECT_ID=omni-spanner
+      - CLOUDSDK_CORE_PROJECT=omni-spanner
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8085/ >/dev/null"]
+    volumes:
+      - datastore_data:/data
+
+  kafka:
+    container_name: kafka
+    image: landoop/fast-data-dev:2.5.1
+    environment:
+      ADV_HOST: localhost
+      RUNTESTS: "0"
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: >
+        INTERNAL://0.0.0.0:9094,
+        EXTERNAL://0.0.0.0:9092,
+        CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: >
+        INTERNAL://kafka:9094,
+        EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: >
+        INTERNAL:PLAINTEXT,
+        EXTERNAL:PLAINTEXT,
+        CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: >
+        1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    ports:
+      - "9092:9092"
+
+  kafka-ui:
+    image: kafbat/kafka-ui:v1.5.0
+    container_name: kafka-ui
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9094
+    ports:
+      - "8080:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+volumes:
+  mysql_shared_data:
+  redash_postgres_data:
+  spanner_data:
+  datastore_data:
+
+networks:
+  redash-internal:
+  shared-db-network:
+    external: true
+    name: omnipf-shared-db

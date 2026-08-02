@@ -1,0 +1,90 @@
+name: local-infra-control-center
+
+services:
+  control-center:
+    build:
+      context: .
+    environment:
+      PORT: 3001
+      HOST: 0.0.0.0
+      # Must match the root stack's Compose project name (no top-level `name:` in
+      # /home/coder/git/docker-compose.yml, so Compose derives it from the
+      # directory name: "git").
+      COMPOSE_PROJECT_NAME: git
+      # Keep this path identical on the Docker host and in this container.
+      COMPOSE_FILE: /home/coder/git/docker-compose.yml
+      CONTROL_CENTER_SERVICES: ${CONTROL_CENTER_SERVICES:-}
+      WORKSPACE_DIR: /home/coder/git/
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: app
+      MYSQL_USER: root
+      MYSQL_PASSWORD:
+      # Hostnames below are the root stack's Compose service names, reachable
+      # because this container joins the same Docker networks (see `networks:`
+      # below). `localhost` would resolve inside this container only, not the
+      # target service's container.
+      DATASTORE_EMULATOR_HOST: datastore:8085
+      DATASTORE_PROJECT_ID: omni-project
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9094
+      SPANNER_EMULATOR_HOST: spanner:9010
+      SPANNER_PROJECT_ID: omni-spanner
+      SPANNER_INSTANCE_ID: omni-instance
+      SPANNER_DATABASE_ID: payment-core
+      KAFKA_UI_INTERNAL_URL: http://kafka-ui:8080
+      KAFKA_UI_OPEN_URL: ${KAFKA_UI_OPEN_URL:-}
+      REDASH_INTERNAL_URL: http://redash:5000
+      REDASH_OPEN_URL: ${REDASH_OPEN_URL:-}
+      TRUST_CODER_PROXY: ${TRUST_CODER_PROXY:-true}
+      CODER_ACTOR_HEADER: ${CODER_ACTOR_HEADER:-x-coder-user}
+      # Cross-origin development clients. Override with a comma-separated list when needed.
+      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-http://localhost:5173,http://127.0.0.1:5173}
+      GOPATH: /home/coder/go
+      GOMODCACHE: /home/coder/go/pkg/mod
+      GOCACHE: /home/coder/.cache/go-build
+      GOBIN: /home/coder/go/bin
+    ports:
+      - '3001:3001'
+      - '8090:8090'
+      - '8091:8091'
+      - '8092:8092'
+      - '50062:50062'
+      - '50059:50059'
+      - '50061:50061'
+    volumes:
+      # Read-only: this container only needs to talk to the Docker API over the
+      # socket, never to modify/replace the socket file itself. Note this does
+      # NOT limit which Docker API calls are allowed - the mount is still
+      # root-equivalent on the Docker host, so only expose Control Center via a
+      # trusted network (Coder proxy/VPN), never publicly.
+      - ${DOCKER_SOCKET_PATH:-/run/user/1000/docker.sock}:/var/run/docker.sock:ro
+      # Defaults to the root stack's directory so relative volume paths in
+      # /home/coder/git/docker-compose.yml resolve correctly on the Docker host.
+      - ${WORKSPACE_HOST_PATH:-/home/coder/git}:${WORKSPACE_HOST_PATH:-/home/coder/git}
+      # Share Go workspace/cache with host so spawned Go services behave like
+      # running directly on the host projects.
+      - ${GOPATH_HOST_PATH:-/home/coder/go}:/home/coder/go
+      - ${GOCACHE_HOST_PATH:-/home/coder/.cache/go-build}:/home/coder/.cache/go-build
+      - control-center-data:/var/lib/control-center
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    networks:
+      # Default network of the root stack (kafka, kafka-ui, spanner, datastore).
+      - git-default
+      # External network shared with mysql and redash (see /home/coder/git/docker-compose.yml).
+      - shared-db-network
+
+volumes:
+  control-center-data:
+
+networks:
+  git-default:
+    external: true
+    name: git_default
+  shared-db-network:
+    external: true
+    name: omnipf-shared-db 
