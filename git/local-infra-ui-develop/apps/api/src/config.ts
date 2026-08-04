@@ -41,7 +41,27 @@ const schema = z.object({
     .string()
     .regex(/^[a-z][a-z0-9-]{0,62}$/)
     .default('local-project'),
-  // Jira credentials stay server-side. Leave blank to use the seeded local cache only.
+  // Jira credentials stay server-side. The internal URL is optional when the
+  // backend can reach the same URL users open in their browser.
+  JIRA_TYPE: z.enum(['cloud', 'data_center']).default('cloud'),
+  JIRA_BASE_URL: z.string().url().default('https://your-site.atlassian.net'),
+  JIRA_INTERNAL_URL: z.string().url().optional().or(z.literal('')),
+  JIRA_JQL: z.string().trim().min(1).max(2_000).default('project = LOCAL ORDER BY updated DESC'),
+  JIRA_ALLOWED_PROJECTS: z
+    .string()
+    .default('LOCAL')
+    .transform((value) =>
+      value
+        .split(',')
+        .map((project) => project.trim().toUpperCase())
+        .filter(Boolean)
+    )
+    .pipe(
+      z
+        .array(z.string().regex(/^[A-Z][A-Z0-9_]{0,39}$/))
+        .min(1)
+        .max(30)
+    ),
   JIRA_API_TOKEN: z.string().default(''),
   JIRA_EMAIL: z.string().email().optional().or(z.literal('')),
   JIRA_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60_000).default(15_000),
