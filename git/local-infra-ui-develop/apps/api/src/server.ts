@@ -20,7 +20,15 @@ const database = new AuditDatabase({
   password: config.MYSQL_PASSWORD,
   database: config.MYSQL_DATABASE,
 });
-await database.initialize();
+await database.initialize({
+  jiraType: config.JIRA_TYPE,
+  baseUrl: config.JIRA_BASE_URL.replace(/\/+$/, ''),
+  jql: config.JIRA_JQL,
+  allowedProjects: config.JIRA_ALLOWED_PROJECTS,
+  syncMode: 'manual',
+  syncIntervalMinutes: 30,
+  staleDays: 5,
+});
 const infra = new Infrastructure(config);
 const tasks = new TaskRunner(database);
 const app = Fastify({ logger: true, genReqId: () => randomUUID() });

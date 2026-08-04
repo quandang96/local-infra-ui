@@ -87,7 +87,7 @@ function mapIssue(issue: any, syncedAt: string): JiraIssueInput {
   return { ...mapped, rawHash: createHash('sha256').update(JSON.stringify(mapped)).digest('hex') };
 }
 
-async function fetchJiraIssues(settings: JiraSettings, config: Config) {
+function jiraRequestContext(settings: JiraSettings, config: Config) {
   if (!config.JIRA_API_TOKEN)
     throw Object.assign(new Error('JIRA_API_TOKEN chưa được cấu hình ở backend'), {
       statusCode: 409,
@@ -99,10 +99,44 @@ async function fetchJiraIssues(settings: JiraSettings, config: Config) {
       code: 'JIRA_EMAIL_MISSING',
     });
 
-  const authorization =
-    settings.jiraType === 'cloud'
-      ? `Basic ${Buffer.from(`${config.JIRA_EMAIL}:${config.JIRA_API_TOKEN}`).toString('base64')}`
-      : `Bearer ${config.JIRA_API_TOKEN}`;
+  return {
+    apiVersion: settings.jiraType === 'cloud' ? '3' : '2',
+    baseUrl: (config.JIRA_INTERNAL_URL || settings.baseUrl).replace(/\/+$/, ''),
+    authorization:
+      settings.jiraType === 'cloud'
+        ? `Basic ${Buffer.from(`${config.JIRA_EMAIL}:${config.JIRA_API_TOKEN}`).toString('base64')}`
+        : `Bearer ${config.JIRA_API_TOKEN}`,
+  };
+}
+
+async function jiraRequestError(response: Response) {
+  const detail = (await response.text()).slice(0, 500);
+  return Object.assign(new Error(`Jira trả về HTTP ${response.status}${detail ? `: ${detail}` : ''}`), {
+    statusCode: response.status === 401 || response.status === 403 ? 403 : 502,
+    code: 'JIRA_REQUEST_FAILED',
+  });
+}
+
+async function testJiraConnection(settings: JiraSettings, config: Config) {
+  const { apiVersion, baseUrl, authorization } = jiraRequestContext(settings, config);
+  const startedAt = Date.now();
+  const response = await fetch(`${baseUrl}/rest/api/${apiVersion}/myself`, {
+    headers: { accept: 'application/json', authorization },
+    signal: AbortSignal.timeout(config.JIRA_REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) throw await jiraRequestError(response);
+  const user: any = await response.json();
+  return {
+    connected: true,
+    jiraType: settings.jiraType,
+    baseUrl: settings.baseUrl,
+    displayName: String(user.displayName ?? user.name ?? user.accountId ?? 'Jira user'),
+    durationMs: Date.now() - startedAt,
+  };
+}
+
+async function fetchJiraIssues(settings: JiraSettings, config: Config) {
+  const { apiVersion, baseUrl, authorization } = jiraRequestContext(settings, config);
   const fields = [
     'summary',
     'description',
@@ -116,13 +150,10 @@ async function fetchJiraIssues(settings: JiraSettings, config: Config) {
   ];
   // Sprint is a Jira Software custom field whose ID differs per site. Discover it when permitted.
   try {
-    const fieldResponse = await fetch(
-      `${settings.baseUrl}/rest/api/${settings.jiraType === 'cloud' ? '3' : '2'}/field`,
-      {
-        headers: { accept: 'application/json', authorization },
-        signal: AbortSignal.timeout(config.JIRA_REQUEST_TIMEOUT_MS),
-      }
-    );
+    const fieldResponse = await fetch(`${baseUrl}/rest/api/${apiVersion}/field`, {
+      headers: { accept: 'application/json', authorization },
+      signal: AbortSignal.timeout(config.JIRA_REQUEST_TIMEOUT_MS),
+    });
     if (fieldResponse.ok) {
       const fieldCatalog: any = await fieldResponse.json();
       const sprintField = Array.isArray(fieldCatalog)
@@ -136,9 +167,10 @@ async function fetchJiraIssues(settings: JiraSettings, config: Config) {
   const all: any[] = [];
   let nextPageToken: string | undefined;
   let startAt = 0;
-  for (let page = 0; page < 10; page += 1) {
+  let completed = false;
+  for (let page = 0; page < 100; page += 1) {
     const cloud = settings.jiraType === 'cloud';
-    const url = `${settings.baseUrl}${cloud ? '/rest/api/3/search/jql' : '/rest/api/2/search'}`;
+    const url = `${baseUrl}${cloud ? '/rest/api/3/search/jql' : '/rest/api/2/search'}`;
     const body = cloud
       ? { jql: settings.jql, fields, maxResults: 100, ...(nextPageToken ? { nextPageToken } : {}) }
       : { jql: settings.jql, fields, maxResults: 100, startAt };
@@ -148,24 +180,29 @@ async function fetchJiraIssues(settings: JiraSettings, config: Config) {
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(config.JIRA_REQUEST_TIMEOUT_MS),
     });
-    if (!response.ok) {
-      const detail = (await response.text()).slice(0, 500);
-      throw Object.assign(new Error(`Jira trả về HTTP ${response.status}${detail ? `: ${detail}` : ''}`), {
-        statusCode: response.status === 401 || response.status === 403 ? 403 : 502,
-        code: 'JIRA_REQUEST_FAILED',
-      });
-    }
+    if (!response.ok) throw await jiraRequestError(response);
     const payload: any = await response.json();
     const issues = Array.isArray(payload.issues) ? payload.issues : [];
     all.push(...issues);
     if (cloud) {
       nextPageToken = payload.nextPageToken;
-      if (payload.isLast === true || !nextPageToken) break;
+      if (payload.isLast === true || !nextPageToken) {
+        completed = true;
+        break;
+      }
     } else {
       startAt += issues.length;
-      if (!issues.length || startAt >= Number(payload.total ?? 0)) break;
+      if (!issues.length || startAt >= Number(payload.total ?? 0)) {
+        completed = true;
+        break;
+      }
     }
   }
+  if (!completed)
+    throw Object.assign(new Error('JQL trả về quá 10.000 issue; hãy thu hẹp phạm vi trước khi sync'), {
+      statusCode: 422,
+      code: 'JIRA_RESULT_LIMIT',
+    });
   const allowed = new Set(settings.allowedProjects);
   return all.filter((issue) => allowed.has(String(issue.fields?.project?.key ?? String(issue.key).split('-')[0])));
 }
@@ -192,7 +229,10 @@ export function registerJiraRoutes(
       const settings = await database.getJiraSettings();
       const sourceIssues = await fetchJiraIssues(settings, config);
       const syncedAt = new Date().toISOString();
-      const result = await database.upsertJiraIssues(sourceIssues.map((issue) => mapIssue(issue, syncedAt)));
+      const result = await database.upsertJiraIssues(
+        sourceIssues.map((issue) => mapIssue(issue, syncedAt)),
+        settings.allowedProjects
+      );
       await database.finishJiraSyncRun(id, { status: 'succeeded', ...result });
       await database.addJiraAudit(actor, 'jira.sync', 'sync_run', id, null, result);
       return { id, ...result, total: sourceIssues.length, syncedAt };
@@ -291,6 +331,8 @@ export function registerJiraRoutes(
     await database.addJiraAudit(actorFor(request), 'jira.settings.update', 'integration', 'jira', before, saved);
     return { ...saved, hasToken: Boolean(config.JIRA_API_TOKEN) };
   });
+
+  app.get('/api/jira/connection', async () => testJiraConnection(await database.getJiraSettings(), config));
 
   app.post('/api/jira/sync', async (request) => performSync(actorFor(request)));
 

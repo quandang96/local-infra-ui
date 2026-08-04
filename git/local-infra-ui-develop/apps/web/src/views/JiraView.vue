@@ -46,6 +46,13 @@ type Settings = {
   updatedAt?: string;
   hasToken?: boolean;
 };
+type ConnectionStatus = {
+  connected: true;
+  jiraType: 'cloud' | 'data_center';
+  baseUrl: string;
+  displayName: string;
+  durationMs: number;
+};
 type Report = {
   groups: Array<{ name: string; total: number; done: number; inProgress: number; blocked: number }>;
   done: Issue[];
@@ -59,6 +66,8 @@ type Report = {
 const activeTab = ref('dashboard');
 const loading = ref(false);
 const syncing = ref(false);
+const testingConnection = ref(false);
+const connection = ref<ConnectionStatus | null>(null);
 const issues = ref<Issue[]>([]);
 const resources = ref<Resource[]>([]);
 const dashboard = ref<any>({ metrics: {}, recentIssues: [], resources: [] });
@@ -108,14 +117,15 @@ const priorityOptions = computed(() => unique('priority'));
 const sprintOptions = computed(() => unique('sprint'));
 const envTemplate = computed(() =>
   settings.jiraType === 'cloud'
-    ? 'JIRA_API_TOKEN=<atlassian-api-token>\nJIRA_EMAIL=<jira-account-email>\nJIRA_REQUEST_TIMEOUT_MS=15000'
-    : 'JIRA_API_TOKEN=<jira-data-center-pat>\nJIRA_EMAIL=\nJIRA_REQUEST_TIMEOUT_MS=15000'
+    ? `JIRA_TYPE=cloud\nJIRA_BASE_URL=${settings.baseUrl || 'https://company.atlassian.net'}\nJIRA_INTERNAL_URL=\nJIRA_API_TOKEN=<atlassian-api-token>\nJIRA_EMAIL=<jira-account-email>\nJIRA_REQUEST_TIMEOUT_MS=15000`
+    : `JIRA_TYPE=data_center\nJIRA_BASE_URL=${settings.baseUrl || 'https://jira.company.internal'}\nJIRA_INTERNAL_URL=\nJIRA_API_TOKEN=<jira-data-center-pat>\nJIRA_EMAIL=\nJIRA_REQUEST_TIMEOUT_MS=15000`
 );
 const configurationChecks = computed(() => [
   { label: 'Backend secret', ready: Boolean(settings.hasToken) },
   { label: 'Base URL', ready: Boolean(settings.baseUrl) },
   { label: 'Team JQL', ready: Boolean(settings.jql.trim()) },
   { label: 'Project allowlist', ready: Boolean(allowedProjectsText.value.trim()) },
+  { label: 'Direct connection', ready: Boolean(connection.value?.connected) },
 ]);
 const filteredIssues = computed(() => {
   const q = filters.q.trim().toLowerCase();
@@ -211,12 +221,26 @@ async function syncJira() {
   syncing.value = true;
   try {
     const result = await post<any>('/jira/sync');
-    ElMessage.success(`Sync xong: ${result.created} mới, ${result.updated} cập nhật`);
+    ElMessage.success(
+      `Sync xong: ${result.created} mới, ${result.updated} cập nhật, ${result.deleted ?? 0} đã loại khỏi cache`
+    );
     await loadAll();
   } catch (cause: unknown) {
     ElMessage.error(cause instanceof Error ? cause.message : 'Sync Jira thất bại');
   } finally {
     syncing.value = false;
+  }
+}
+async function testConnection() {
+  testingConnection.value = true;
+  connection.value = null;
+  try {
+    connection.value = await api<ConnectionStatus>('/jira/connection');
+    ElMessage.success(`Đã kết nối trực tiếp với Jira bằng ${connection.value.displayName}`);
+  } catch (cause: unknown) {
+    ElMessage.error(cause instanceof Error ? cause.message : 'Không kết nối được Jira');
+  } finally {
+    testingConnection.value = false;
   }
 }
 async function saveSettings() {
@@ -230,6 +254,7 @@ async function saveSettings() {
       body: JSON.stringify({ ...settings, allowedProjects: projects }),
     });
     Object.assign(settings, saved);
+    connection.value = null;
     allowedProjectsText.value = saved.allowedProjects.join(', ');
     ElMessage.success('Đã lưu cấu hình Jira');
   } catch (cause: unknown) {
@@ -328,8 +353,10 @@ onMounted(loadAll);
       </div>
       <div class="hero-actions">
         <el-tag :type="settings.hasToken ? 'success' : 'warning'" effect="dark">{{
-          settings.hasToken ? 'Jira secret ready' : 'Local cache mode'
+          settings.hasToken ? 'Jira token configured' : 'Jira token missing'
         }}</el-tag
+        ><a v-if="settings.baseUrl" :href="settings.baseUrl" target="_blank" rel="noreferrer"
+          ><el-button>Open Jira</el-button></a
         ><el-button :loading="syncing" type="primary" @click="syncJira">Sync Jira</el-button>
       </div>
     </div>
@@ -620,8 +647,8 @@ onMounted(loadAll);
               <article>
                 <b>3</b
                 ><span
-                  ><strong>Phạm vi an toàn</strong
-                  ><small>Nhập Team JQL và project allowlist; kết quả ngoài allowlist sẽ bị loại.</small></span
+                  ><strong>Lưu và test kết nối thật</strong
+                  ><small>Nhập JQL/allowlist, lưu cấu hình rồi gọi trực tiếp Jira để xác minh PAT.</small></span
                 >
               </article>
             </div>
@@ -637,6 +664,13 @@ onMounted(loadAll);
               >{{ item.label }}</span
             >
           </div>
+          <el-alert
+            v-if="connection"
+            :title="`Đã kết nối ${connection.displayName} · ${connection.durationMs} ms`"
+            type="success"
+            show-icon
+            :closable="false"
+          />
         </section>
         <div class="jira-grid settings-grid">
           <section class="jira-card settings-form">
@@ -690,7 +724,10 @@ onMounted(loadAll);
                   ><el-input-number v-model="settings.staleDays" :min="1" :max="365"
                 /></el-form-item>
               </div>
-              <el-button type="primary" @click="saveSettings">Lưu cấu hình</el-button></el-form
+              <el-button type="primary" @click="saveSettings">Lưu cấu hình</el-button
+              ><el-button :loading="testingConnection" @click="testConnection"
+                >Test kết nối trực tiếp</el-button
+              ></el-form
             >
           </section>
           <section class="jira-card">

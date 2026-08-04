@@ -51,6 +51,7 @@ export type JiraSettings = {
   staleDays: number;
   updatedAt: string;
 };
+export type JiraSettingsDefaults = Omit<JiraSettings, 'updatedAt'>;
 
 type DatabaseConfig = { host: string; port: number; user: string; password: string; database: string };
 type TaskRow = RowDataPacket & Record<string, unknown>;
@@ -84,7 +85,7 @@ export class AuditDatabase {
     });
   }
 
-  async initialize() {
+  async initialize(jiraDefaults: JiraSettingsDefaults) {
     const statements = [
       `
       CREATE TABLE IF NOT EXISTS tasks (
@@ -158,133 +159,58 @@ export class AuditDatabase {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
     ];
     for (const statement of statements) await this.pool.query(statement);
-    await this.seedJiraWorkspace();
+    await this.initializeJiraWorkspace(jiraDefaults);
   }
 
-  private async seedJiraWorkspace() {
-    const now = new Date();
-    const iso = (daysAgo = 0) => new Date(now.getTime() - daysAgo * 86_400_000).toISOString();
+  private async initializeJiraWorkspace(defaults: JiraSettingsDefaults) {
+    const now = new Date().toISOString();
     await this.pool.execute(
       `INSERT IGNORE INTO jira_settings
        (id, jira_type, base_url, jql, allowed_projects, sync_mode, sync_interval_minutes, stale_days, updated_at)
-       VALUES (1, 'cloud', 'https://your-company.atlassian.net', 'project = MEMBER ORDER BY updated DESC',
-       '["MEMBER"]', 'manual', 30, 5, ?)`,
-      [iso()]
+       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        defaults.jiraType,
+        defaults.baseUrl,
+        defaults.jql,
+        JSON.stringify(defaults.allowedProjects),
+        defaults.syncMode,
+        defaults.syncIntervalMinutes,
+        defaults.staleDays,
+        now,
+      ]
     );
-    const [countRows] = await this.pool.query<Array<RowDataPacket & { count: number }>>(
-      'SELECT COUNT(*) AS count FROM jira_issues'
+
+    // Migrate only the exact legacy placeholder configuration. User-provided
+    // settings are never overwritten by environment defaults on restart.
+    await this.pool.execute(
+      `UPDATE jira_settings
+       SET jira_type = ?, base_url = ?, jql = ?, allowed_projects = ?, sync_mode = ?,
+           sync_interval_minutes = ?, stale_days = ?, updated_at = ?
+       WHERE id = 1 AND jira_type = 'cloud'
+         AND base_url = 'https://your-company.atlassian.net'
+         AND jql = 'project = MEMBER ORDER BY updated DESC'
+         AND allowed_projects = '["MEMBER"]'`,
+      [
+        defaults.jiraType,
+        defaults.baseUrl,
+        defaults.jql,
+        JSON.stringify(defaults.allowedProjects),
+        defaults.syncMode,
+        defaults.syncIntervalMinutes,
+        defaults.staleDays,
+        now,
+      ]
     );
-    if (Number(countRows[0]?.count ?? 0) > 0) return;
-    const samples: JiraIssueInput[] = [
-      [
-        '100142',
-        'MEM-142',
-        'Investigate incorrect membership status',
-        'Review',
-        'indeterminate',
-        'An',
-        'High',
-        'Sprint 24',
-        0,
-        'Investigation',
-      ],
-      [
-        '100137',
-        'MEM-137',
-        'Confirm renewal business rule with BA',
-        'In Progress',
-        'indeterminate',
-        'Bình',
-        'Medium',
-        'Sprint 24',
-        1,
-        'Q&A',
-      ],
-      [
-        '100129',
-        'MEM-129',
-        'Integrate member event with Payment Service',
-        'Blocked',
-        'indeterminate',
-        'Chi',
-        'Highest',
-        'Sprint 24',
-        2,
-        'Integration',
-      ],
-      [
-        '100124',
-        'MEM-124',
-        'Update customer response guideline',
-        'To Do',
-        'new',
-        'Dũng',
-        'Low',
-        'Backlog',
-        6,
-        'Guideline',
-      ],
-      [
-        '100118',
-        'MEM-118',
-        'Resolve duplicated member profile',
-        'Done',
-        'done',
-        'Dũng',
-        'High',
-        'Sprint 24',
-        2,
-        'Bug fix',
-      ],
-      [
-        '100111',
-        'MEM-111',
-        'Analyse missing benefit history',
-        'In Progress',
-        'indeterminate',
-        'An',
-        'Medium',
-        'Sprint 24',
-        8,
-        'Investigation',
-      ],
-    ].map(
-      ([jiraId, jiraKey, summary, status, statusCategory, assigneeName, priority, sprint, daysAgo, category]) =>
-        ({
-          jiraId: String(jiraId),
-          jiraKey: String(jiraKey),
-          projectKey: 'MEMBER',
-          summary: String(summary),
-          status: String(status),
-          statusCategory: String(statusCategory),
-          assigneeName: String(assigneeName),
-          priority: String(priority),
-          sprint: String(sprint),
-          dueDate: new Date(now.getTime() + (7 - Number(daysAgo)) * 86_400_000).toISOString().slice(0, 10),
-          jiraUpdatedAt: iso(Number(daysAgo)),
-          syncedAt: iso(),
-          rawHash: `sample-${jiraKey}`,
-          description: null,
-          issueType: 'Task',
-          internalCategory: String(category),
-        }) as JiraIssueInput & { internalCategory: string }
+
+    // Versions before the real Jira integration seeded fake MEMBER issues.
+    // Remove only rows carrying that deterministic marker so the workspace can
+    // never present mock data as if it came from Jira.
+    await this.pool.execute(
+      `DELETE metadata FROM jira_task_metadata metadata
+       INNER JOIN jira_issues issue ON issue.jira_key = metadata.jira_key
+       WHERE issue.raw_hash LIKE 'sample-%'`
     );
-    await this.upsertJiraIssues(samples);
-    for (const sample of samples as Array<JiraIssueInput & { internalCategory?: string }>) {
-      await this.pool.execute(
-        `INSERT IGNORE INTO jira_task_metadata
-         (jira_key, report_note, internal_category, block_reason, highlight, risk, created_by, updated_by, created_at, updated_at)
-         VALUES (?, '', ?, ?, 0, ?, 'system', 'system', ?, ?)`,
-        [
-          sample.jiraKey,
-          sample.internalCategory ?? '',
-          sample.status === 'Blocked' ? 'Phụ thuộc Payment Service ngoài scope' : '',
-          sample.status === 'Blocked' ? 1 : 0,
-          iso(),
-          iso(),
-        ]
-      );
-    }
+    await this.pool.execute("DELETE FROM jira_issues WHERE raw_hash LIKE 'sample-%'");
   }
 
   async createTask(task: Record<string, unknown>) {
@@ -569,10 +495,11 @@ export class AuditDatabase {
     return this.getJiraIssue(jiraKey);
   }
 
-  async upsertJiraIssues(issues: JiraIssueInput[]) {
+  async upsertJiraIssues(issues: JiraIssueInput[], reconciledProjects: string[] = []) {
     let created = 0,
       updated = 0,
-      unchanged = 0;
+      unchanged = 0,
+      deleted = 0;
     const connection = await this.pool.getConnection();
     try {
       await connection.beginTransaction();
@@ -613,8 +540,18 @@ export class AuditDatabase {
           ]
         );
       }
+      if (reconciledProjects.length) {
+        const projectPlaceholders = reconciledProjects.map(() => '?').join(', ');
+        const issueKeys = issues.map((issue) => issue.jiraKey);
+        const keyClause = issueKeys.length ? ` AND jira_key NOT IN (${issueKeys.map(() => '?').join(', ')})` : '';
+        const [deleteResult] = await connection.execute(
+          `DELETE FROM jira_issues WHERE project_key IN (${projectPlaceholders})${keyClause}`,
+          [...reconciledProjects, ...issueKeys]
+        );
+        deleted = Number((deleteResult as { affectedRows?: number }).affectedRows ?? 0);
+      }
       await connection.commit();
-      return { created, updated, unchanged };
+      return { created, updated, unchanged, deleted };
     } catch (error) {
       await connection.rollback();
       throw error;
