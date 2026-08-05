@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
-import type { AuditDatabase, JiraIssueInput, JiraSettings } from './database.js';
+import type { AuditDatabase, JiraCommentInput, JiraIssueInput, JiraSettings, JiraWorklogInput } from './database.js';
 
 const metadataBody = z.object({
   reportNote: z.string().max(10_000).default(''),
@@ -68,6 +68,10 @@ function sprintName(fields: Record<string, any>) {
 
 function mapIssue(issue: any, syncedAt: string): JiraIssueInput {
   const fields = issue.fields ?? {};
+  const labels = Array.isArray(fields.labels) && fields.labels.length
+    ? JSON.stringify(fields.labels)
+    : null;
+  const parent = fields.parent ?? null;
   const mapped = {
     jiraId: String(issue.id ?? issue.key),
     jiraKey: String(issue.key),
@@ -81,6 +85,10 @@ function mapIssue(issue: any, syncedAt: string): JiraIssueInput {
     priority: fields.priority?.name ? String(fields.priority.name) : null,
     sprint: sprintName(fields),
     dueDate: fields.duedate ? String(fields.duedate) : null,
+    parentKey: parent?.key ? String(parent.key) : null,
+    parentSummary: parent?.fields?.summary ? String(parent.fields.summary) : null,
+    labels,
+    startDate: fields.startDate ?? fields.customfield_10015 ?? null,
     jiraUpdatedAt: String(fields.updated ?? syncedAt),
     syncedAt,
   };
@@ -147,8 +155,11 @@ async function fetchJiraIssues(settings: JiraSettings, config: Config) {
     'duedate',
     'updated',
     'project',
+    'parent',
+    'labels',
+    'comment',
   ];
-  // Sprint is a Jira Software custom field whose ID differs per site. Discover it when permitted.
+  // Sprint and start_date are Jira Software custom fields whose IDs differ per site. Discover them.
   try {
     const fieldResponse = await fetch(`${baseUrl}/rest/api/${apiVersion}/field`, {
       headers: { accept: 'application/json', authorization },
@@ -156,14 +167,20 @@ async function fetchJiraIssues(settings: JiraSettings, config: Config) {
     });
     if (fieldResponse.ok) {
       const fieldCatalog: any = await fieldResponse.json();
-      const sprintField = Array.isArray(fieldCatalog)
-        ? fieldCatalog.find((field) => String(field.name).toLowerCase() === 'sprint')
-        : undefined;
-      if (sprintField?.id) fields.push(String(sprintField.id));
+      if (Array.isArray(fieldCatalog)) {
+        const sprintField = fieldCatalog.find((field) => String(field.name).toLowerCase() === 'sprint');
+        if (sprintField?.id) fields.push(String(sprintField.id));
+        const startField = fieldCatalog.find(
+          (field) => ['start date', 'story start date', 'start_date'].includes(String(field.name).toLowerCase())
+        );
+        if (startField?.id && startField.id !== 'startDate') fields.push(String(startField.id));
+      }
     }
   } catch {
-    // Sprint is optional; a field-catalog permission failure must not block issue sync.
+    // Optional fields; permission failures must not block issue sync.
   }
+  // Always include known cloud start date field
+  if (!fields.includes('customfield_10015')) fields.push('customfield_10015');
   const all: any[] = [];
   let nextPageToken: string | undefined;
   let startAt = 0;
@@ -207,6 +224,72 @@ async function fetchJiraIssues(settings: JiraSettings, config: Config) {
   return all.filter((issue) => allowed.has(String(issue.fields?.project?.key ?? String(issue.key).split('-')[0])));
 }
 
+// Fetch worklogs for a list of issue keys. Runs at most CONCURRENCY requests simultaneously.
+async function fetchJiraWorklogs(
+  issueKeys: string[],
+  settings: JiraSettings,
+  config: Config,
+  syncedAt: string
+): Promise<JiraWorklogInput[]> {
+  const { apiVersion, baseUrl, authorization } = jiraRequestContext(settings, config);
+  const CONCURRENCY = 5;
+  const cutoff = new Date(Date.now() - 90 * 86_400_000).toISOString();
+  const results: JiraWorklogInput[] = [];
+
+  async function fetchOne(key: string) {
+    try {
+      const response = await fetch(`${baseUrl}/rest/api/${apiVersion}/issue/${encodeURIComponent(key)}/worklog`, {
+        headers: { accept: 'application/json', authorization },
+        signal: AbortSignal.timeout(config.JIRA_REQUEST_TIMEOUT_MS),
+      });
+      if (!response.ok) return;
+      const payload: any = await response.json();
+      const worklogs: any[] = Array.isArray(payload.worklogs) ? payload.worklogs : [];
+      for (const w of worklogs) {
+        if (!w.started || w.started < cutoff) continue;
+        results.push({
+          id: String(w.id),
+          jiraKey: key,
+          authorName: String(w.author?.displayName ?? w.author?.name ?? 'Unknown'),
+          authorAccountId: w.author?.accountId ? String(w.author.accountId) : null,
+          timeSpentSeconds: Number(w.timeSpentSeconds ?? 0),
+          started: String(w.started),
+          comment: w.comment ? (typeof w.comment === 'string' ? w.comment : plainText(w.comment)) : null,
+          syncedAt,
+        });
+      }
+    } catch {
+      // worklog fetch failure is non-fatal
+    }
+  }
+
+  // Run with bounded concurrency
+  for (let i = 0; i < issueKeys.length; i += CONCURRENCY) {
+    await Promise.all(issueKeys.slice(i, i + CONCURRENCY).map(fetchOne));
+  }
+  return results;
+}
+
+// Extract comments from issues fetched via search (comment field is included in issue fields)
+function extractComments(issues: any[], syncedAt: string): JiraCommentInput[] {
+  const results: JiraCommentInput[] = [];
+  for (const issue of issues) {
+    const comments: any[] = issue.fields?.comment?.comments ?? [];
+    for (const c of comments) {
+      results.push({
+        id: String(c.id),
+        jiraKey: String(issue.key),
+        authorName: String(c.author?.displayName ?? c.author?.name ?? 'Unknown'),
+        body: c.body ? (typeof c.body === 'string' ? c.body : plainText(c.body)) : null,
+        createdAtJira: String(c.created),
+        updatedAtJira: String(c.updated ?? c.created),
+        syncedAt,
+      });
+    }
+  }
+  return results;
+}
+
 export function registerJiraRoutes(
   app: FastifyInstance,
   database: AuditDatabase,
@@ -233,9 +316,16 @@ export function registerJiraRoutes(
         sourceIssues.map((issue) => mapIssue(issue, syncedAt)),
         settings.allowedProjects
       );
+      // Sync comments (from embedded field in search results)
+      const comments = extractComments(sourceIssues, syncedAt);
+      await database.upsertJiraComments(comments);
+      // Sync worklogs (requires per-issue API calls)
+      const issueKeys = sourceIssues.map((issue) => String(issue.key));
+      const worklogs = await fetchJiraWorklogs(issueKeys, settings, config, syncedAt);
+      await database.upsertJiraWorklogs(worklogs);
       await database.finishJiraSyncRun(id, { status: 'succeeded', ...result });
-      await database.addJiraAudit(actor, 'jira.sync', 'sync_run', id, null, result);
-      return { id, ...result, total: sourceIssues.length, syncedAt };
+      await database.addJiraAudit(actor, 'jira.sync', 'sync_run', id, null, { ...result, worklogs: worklogs.length, comments: comments.length });
+      return { id, ...result, total: sourceIssues.length, worklogs: worklogs.length, comments: comments.length, syncedAt };
     } catch (cause: any) {
       if (runRecorded) {
         await database.finishJiraSyncRun(id, { status: 'failed', failed: 1, error: cause.message });
@@ -263,6 +353,7 @@ export function registerJiraRoutes(
         assignee: z.string().max(255).optional(),
         priority: z.string().max(80).optional(),
         sprint: z.string().max(255).optional(),
+        parentKey: z.string().max(80).optional(),
       })
       .parse(request.query);
     return { rows: await database.listJiraIssues(query) };
@@ -274,6 +365,16 @@ export function registerJiraRoutes(
     if (!issue)
       throw Object.assign(new Error('Không tìm thấy Jira issue'), { statusCode: 404, code: 'JIRA_ISSUE_NOT_FOUND' });
     return issue;
+  });
+
+  app.get('/api/jira/issues/:jiraKey/comments', async (request) => {
+    const { jiraKey } = z.object({ jiraKey: z.string().regex(/^[A-Z][A-Z0-9_]*-\d+$/) }).parse(request.params);
+    return { rows: await database.listJiraComments(jiraKey) };
+  });
+
+  app.get('/api/jira/issues/:jiraKey/worklogs', async (request) => {
+    const { jiraKey } = z.object({ jiraKey: z.string().regex(/^[A-Z][A-Z0-9_]*-\d+$/) }).parse(request.params);
+    return { rows: await database.listJiraWorklogs({ jiraKey }) };
   });
 
   app.patch('/api/jira/issues/:jiraKey/metadata', async (request) => {
@@ -338,6 +439,44 @@ export function registerJiraRoutes(
 
   app.get('/api/jira/sync-runs', async () => ({ rows: await database.listJiraSyncRuns() }));
   app.get('/api/jira/audit', async () => ({ rows: await database.listJiraAudit() }));
+
+  app.get('/api/jira/worklogs', async (request) => {
+    const query = z
+      .object({
+        jiraKey: z.string().max(80).optional(),
+        assignee: z.string().max(255).optional(),
+        dateFrom: z.string().max(40).optional(),
+        dateTo: z.string().max(40).optional(),
+      })
+      .parse(request.query);
+    return { rows: await database.listJiraWorklogs(query) };
+  });
+
+  app.get('/api/jira/worklogs/report', async (request) => {
+    const query = z
+      .object({
+        dateFrom: z.string().max(40).default(() => new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10)),
+        dateTo: z.string().max(40).default(() => new Date().toISOString().slice(0, 10)),
+      })
+      .parse(request.query);
+    const rows = await database.worklogReportByMemberByDay(query.dateFrom, query.dateTo);
+    // Build member list and day list for matrix
+    const members = [...new Set(rows.map((r: any) => String(r.authorName)))].sort();
+    const days = [...new Set(rows.map((r: any) => String(r.day)))].sort();
+    // Build lookup: { [member]: { [day]: totalSeconds } }
+    const matrix: Record<string, Record<string, number>> = {};
+    for (const row of rows as any[]) {
+      const m = String(row.authorName);
+      const d = String(row.day);
+      if (!matrix[m]) matrix[m] = {};
+      matrix[m][d] = Number(row.totalSeconds);
+    }
+    const totals: Record<string, number> = {};
+    for (const member of members) {
+      totals[member] = Object.values(matrix[member] ?? {}).reduce((a, b) => a + b, 0);
+    }
+    return { members, days, matrix, totals, dateFrom: query.dateFrom, dateTo: query.dateTo };
+  });
   app.get('/api/jira/reports/weekly', async () => {
     const issues: any[] = await database.listJiraIssues();
     const groups = new Map<
