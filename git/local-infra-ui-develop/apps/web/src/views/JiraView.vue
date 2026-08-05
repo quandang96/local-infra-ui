@@ -16,6 +16,10 @@ type Issue = {
   priority?: string;
   sprint?: string;
   dueDate?: string;
+  parentKey?: string;
+  parentSummary?: string;
+  labels?: string; // JSON array string
+  startDate?: string;
   jiraUpdatedAt: string;
   syncedAt: string;
   reportNote?: string;
@@ -62,6 +66,29 @@ type Report = {
   risks: Issue[];
   markdown: string;
 };
+type WorklogReport = {
+  members: string[];
+  days: string[];
+  matrix: Record<string, Record<string, number>>;
+  totals: Record<string, number>;
+  dateFrom: string;
+  dateTo: string;
+};
+type Worklog = {
+  id: string;
+  jiraKey: string;
+  authorName: string;
+  timeSpentSeconds: number;
+  started: string;
+  comment?: string;
+};
+type Comment = {
+  id: string;
+  jiraKey: string;
+  authorName: string;
+  body?: string;
+  createdAtJira: string;
+};
 
 const activeTab = ref('dashboard');
 const loading = ref(false);
@@ -83,6 +110,16 @@ const report = ref<Report>({
 const syncRuns = ref<any[]>([]);
 const audits = ref<any[]>([]);
 const filters = reactive({ q: '', status: '', assignee: '', priority: '', sprint: '' });
+// Issue drawer detail data
+const issueComments = ref<Comment[]>([]);
+const issueWorklogs = ref<Worklog[]>([]);
+const issueDetailTab = ref('info');
+const loadingDetail = ref(false);
+// Worklog report
+const worklogReport = ref<WorklogReport | null>(null);
+const worklogReportLoading = ref(false);
+const worklogDateFrom = ref(new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10));
+const worklogDateTo = ref(new Date().toISOString().slice(0, 10));
 const defaultSettings: Settings = {
   jiraType: 'cloud',
   baseUrl: '',
@@ -115,6 +152,13 @@ const statusOptions = computed(() => unique('status'));
 const assigneeOptions = computed(() => unique('assigneeName'));
 const priorityOptions = computed(() => unique('priority'));
 const sprintOptions = computed(() => unique('sprint'));
+const parentOptions = computed(() =>
+  [...new Set(issues.value.filter((i) => i.parentKey).map((i) => i.parentKey!))].sort()
+);
+function parseLabels(labels?: string): string[] {
+  if (!labels) return [];
+  try { return JSON.parse(labels); } catch { return []; }
+}
 const envTemplate = computed(() =>
   settings.jiraType === 'cloud'
     ? `JIRA_TYPE=cloud\nJIRA_BASE_URL=${settings.baseUrl || 'https://company.atlassian.net'}\nJIRA_INTERNAL_URL=\nJIRA_API_TOKEN=<atlassian-api-token>\nJIRA_EMAIL=<jira-account-email>\nJIRA_REQUEST_TIMEOUT_MS=15000`
@@ -192,7 +236,7 @@ async function loadAll() {
   }
 }
 
-function openIssue(issue: Issue) {
+async function openIssue(issue: Issue) {
   selectedIssue.value = issue;
   Object.assign(metadata, {
     reportNote: issue.reportNote ?? '',
@@ -201,7 +245,24 @@ function openIssue(issue: Issue) {
     highlight: Boolean(issue.highlight),
     risk: Boolean(issue.risk),
   });
+  issueDetailTab.value = 'info';
+  issueComments.value = [];
+  issueWorklogs.value = [];
   issueDrawer.value = true;
+  // Load comments and worklogs in background
+  loadingDetail.value = true;
+  try {
+    const [commentsRes, worklogsRes] = await Promise.all([
+      api<{ rows: Comment[] }>(`/jira/issues/${issue.jiraKey}/comments`),
+      api<{ rows: Worklog[] }>(`/jira/issues/${issue.jiraKey}/worklogs`),
+    ]);
+    issueComments.value = commentsRes.rows;
+    issueWorklogs.value = worklogsRes.rows;
+  } catch {
+    // non-fatal
+  } finally {
+    loadingDetail.value = false;
+  }
 }
 async function saveMetadata() {
   if (!selectedIssue.value) return;
@@ -318,13 +379,18 @@ function exportCsv() {
     return `"${guarded.replaceAll('"', '""')}"`;
   };
   const rows = [
-    ['Jira Key', 'Summary', 'Status', 'Assignee', 'Priority', 'Category', 'Report note'],
+    ['Jira Key', 'Summary', 'Status', 'Assignee', 'Priority', 'Sprint', 'Parent', 'Start date', 'Due date', 'Labels', 'Category', 'Report note'],
     ...issues.value.map((issue) => [
       issue.jiraKey,
       issue.summary,
       issue.status,
       issue.assigneeName,
       issue.priority,
+      issue.sprint,
+      issue.parentKey,
+      issue.startDate,
+      issue.dueDate,
+      parseLabels(issue.labels).join('; '),
       issue.internalCategory,
       issue.reportNote,
     ]),
@@ -336,6 +402,54 @@ function exportCsv() {
   const anchor = document.createElement('a');
   anchor.href = url;
   anchor.download = 'jira-weekly-report.csv';
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+async function loadWorklogReport() {
+  worklogReportLoading.value = true;
+  try {
+    worklogReport.value = await api<WorklogReport>(
+      `/jira/worklogs/report?dateFrom=${worklogDateFrom.value}&dateTo=${worklogDateTo.value}`
+    );
+  } catch (cause: unknown) {
+    ElMessage.error(cause instanceof Error ? cause.message : 'Không tải được worklog report');
+  } finally {
+    worklogReportLoading.value = false;
+  }
+}
+
+function secondsToHours(seconds: number) {
+  return (seconds / 3600).toFixed(1);
+}
+
+function heatmapColor(seconds: number) {
+  if (!seconds) return 'transparent';
+  const hours = seconds / 3600;
+  if (hours >= 8) return '#1a6b3c';
+  if (hours >= 4) return '#276749';
+  if (hours >= 2) return '#2f7a56';
+  if (hours >= 1) return '#37895e';
+  return '#1d4e38';
+}
+
+function exportWorklogCsv() {
+  if (!worklogReport.value) return;
+  const { members, days, matrix, totals } = worklogReport.value;
+  const safe = (value: unknown) => `"${String(value ?? '').replaceAll('"', '""')}"`;
+  const header = ['Thành viên', ...days, 'Tổng (giờ)'];
+  const dataRows = members.map((m) => [
+    m,
+    ...days.map((d) => secondsToHours(matrix[m]?.[d] ?? 0)),
+    secondsToHours(totals[m] ?? 0),
+  ]);
+  const blob = new Blob([`\uFEFF${[header, ...dataRows].map((r) => r.map(safe).join(',')).join('\n')}`], {
+    type: 'text/csv;charset=utf-8',
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = 'jira-worklog-report.csv';
   anchor.click();
   URL.revokeObjectURL(url);
 }
@@ -458,7 +572,7 @@ onMounted(loadAll);
             /></el-select>
           </div>
           <el-table :data="filteredIssues" row-key="jiraKey" @row-click="openIssue">
-            <el-table-column label="Issue" min-width="340"
+            <el-table-column label="Issue" min-width="300"
               ><template #default="{ row }"
                 ><div class="issue-title">
                   <b>{{ row.jiraKey }}</b
@@ -466,18 +580,31 @@ onMounted(loadAll);
                 </div></template
               ></el-table-column
             >
-            <el-table-column label="Status" width="145"
+            <el-table-column label="Status" width="140"
               ><template #default="{ row }"
                 ><el-tag :type="statusType(row)">{{ row.status }}</el-tag></template
               ></el-table-column
             >
-            <el-table-column prop="assigneeName" label="Assignee" width="130" /><el-table-column
-              prop="priority"
-              label="Priority"
-              width="105"
-            /><el-table-column prop="sprint" label="Sprint" width="130" />
-            <el-table-column label="Updated" width="170"
-              ><template #default="{ row }">{{ date(row.jiraUpdatedAt) }}</template></el-table-column
+            <el-table-column label="Parent" width="120"
+              ><template #default="{ row }"
+                ><span v-if="row.parentKey" class="parent-chip" :title="row.parentSummary">{{ row.parentKey }}</span
+                ><span v-else class="text-muted">—</span></template
+              ></el-table-column
+            >
+            <el-table-column label="Sprint" width="130"
+              ><template #default="{ row }">{{ row.sprint || '—' }}</template></el-table-column
+            >
+            <el-table-column prop="assigneeName" label="Assignee" width="130" />
+            <el-table-column label="Start" width="110"
+              ><template #default="{ row }">{{ date(row.startDate) }}</template></el-table-column
+            >
+            <el-table-column label="Due" width="110"
+              ><template #default="{ row }">{{ date(row.dueDate) }}</template></el-table-column
+            >
+            <el-table-column label="Labels" min-width="140"
+              ><template #default="{ row }"
+                ><span v-for="lbl in parseLabels(row.labels)" :key="lbl" class="label-chip">{{ lbl }}</span></template
+              ></el-table-column
             >
           </el-table>
         </section>
@@ -520,14 +647,14 @@ onMounted(loadAll);
       <el-tab-pane name="reports">
         <template #label>
           <span class="jira-tab-label"
-            ><i>↗</i><span><b>Báo cáo</b><small>Weekly và CSV</small></span></span
+            ><i>↗</i><span><b>Báo cáo</b><small>Weekly và logwork</small></span></span
           >
         </template>
         <div class="report-actions">
           <p>Tổng hợp tự động từ cache Jira và metadata lưu trong MySQL.</p>
           <div>
             <el-button @click="copyReport">Copy Markdown</el-button
-            ><el-button type="primary" @click="exportCsv">Export CSV</el-button>
+            ><el-button type="primary" @click="exportCsv">Export CSV issues</el-button>
           </div>
         </div>
         <div class="jira-grid report-grid">
@@ -565,6 +692,86 @@ onMounted(loadAll);
             </p>
           </section>
         </div>
+
+        <!-- Logwork report section -->
+        <section class="jira-card worklog-report-card">
+          <div class="worklog-report-header">
+            <div>
+              <h3>Logwork theo ngày</h3>
+              <small>Tổng giờ làm việc của từng thành viên theo ngày (từ dữ liệu Jira worklog)</small>
+            </div>
+            <div class="worklog-report-controls">
+              <el-date-picker
+                v-model="worklogDateFrom"
+                type="date"
+                placeholder="Từ ngày"
+                format="YYYY-MM-DD"
+                value-format="YYYY-MM-DD"
+                size="small"
+              />
+              <el-date-picker
+                v-model="worklogDateTo"
+                type="date"
+                placeholder="Đến ngày"
+                format="YYYY-MM-DD"
+                value-format="YYYY-MM-DD"
+                size="small"
+              />
+              <el-button size="small" type="primary" :loading="worklogReportLoading" @click="loadWorklogReport"
+                >Xem báo cáo</el-button
+              >
+              <el-button size="small" :disabled="!worklogReport" @click="exportWorklogCsv">Export CSV</el-button>
+            </div>
+          </div>
+
+          <div v-if="worklogReport && worklogReport.members.length" class="worklog-matrix-wrap">
+            <div class="worklog-legend">
+              <span>Giờ log:</span>
+              <span class="legend-dot" style="background:#1d4e38">0-1h</span>
+              <span class="legend-dot" style="background:#37895e">1-2h</span>
+              <span class="legend-dot" style="background:#2f7a56">2-4h</span>
+              <span class="legend-dot" style="background:#276749">4-8h</span>
+              <span class="legend-dot" style="background:#1a6b3c">≥8h</span>
+            </div>
+            <div class="worklog-matrix">
+              <table class="wl-table">
+                <thead>
+                  <tr>
+                    <th class="member-col">Thành viên</th>
+                    <th v-for="day in worklogReport.days" :key="day" class="day-col">{{ day.slice(5) }}</th>
+                    <th class="total-col">Tổng</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="member in worklogReport.members" :key="member">
+                    <td class="member-name">{{ member }}</td>
+                    <td
+                      v-for="day in worklogReport.days"
+                      :key="day"
+                      class="wl-cell"
+                      :style="{ background: heatmapColor(worklogReport.matrix[member]?.[day] ?? 0) }"
+                      :title="`${member} · ${day}: ${secondsToHours(worklogReport.matrix[member]?.[day] ?? 0)}h`"
+                    >
+                      <span v-if="worklogReport.matrix[member]?.[day]">
+                        {{ secondsToHours(worklogReport.matrix[member][day]) }}
+                      </span>
+                    </td>
+                    <td class="total-cell">{{ secondsToHours(worklogReport.totals[member] ?? 0) }}h</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <el-empty
+            v-else-if="worklogReport && !worklogReport.members.length"
+            description="Không có dữ liệu logwork trong khoảng thời gian này"
+            :image-size="60"
+          />
+          <div v-else class="worklog-placeholder">
+            <span>Chọn khoảng ngày và nhấn <b>Xem báo cáo</b> để hiển thị logwork theo thành viên.</span>
+          </div>
+        </section>
       </el-tab-pane>
 
       <el-tab-pane name="resources">
@@ -751,51 +958,97 @@ onMounted(loadAll);
       </el-tab-pane>
     </el-tabs>
 
-    <el-drawer v-model="issueDrawer" size="520px"
-      ><template #header
-        ><div class="drawer-title">
+    <!-- Issue Drawer -->
+    <el-drawer v-model="issueDrawer" size="580px">
+      <template #header>
+        <div class="drawer-title">
           <span>{{ selectedIssue?.jiraKey }}</span>
           <h3>{{ selectedIssue?.summary }}</h3>
-        </div></template
-      >
-      <div v-if="selectedIssue" class="issue-detail">
-        <div class="detail-grid">
-          <span
-            >Status<b
-              ><el-tag :type="statusType(selectedIssue)">{{ selectedIssue.status }}</el-tag></b
-            ></span
-          ><span
-            >Assignee<b>{{ selectedIssue.assigneeName || 'Unassigned' }}</b></span
-          ><span
-            >Priority<b>{{ selectedIssue.priority || '—' }}</b></span
-          ><span
-            >Sprint<b>{{ selectedIssue.sprint || '—' }}</b></span
-          ><span
-            >Due date<b>{{ date(selectedIssue.dueDate) }}</b></span
-          ><span
-            >Updated<b>{{ date(selectedIssue.jiraUpdatedAt) }}</b></span
-          >
         </div>
-        <p v-if="selectedIssue.description" class="description">{{ selectedIssue.description }}</p>
-        <el-divider>Local metadata</el-divider
-        ><el-form label-position="top"
-          ><el-form-item label="Internal category"><el-input v-model="metadata.internalCategory" /></el-form-item
-          ><el-form-item label="Report note"
-            ><el-input v-model="metadata.reportNote" type="textarea" :rows="4" /></el-form-item
-          ><el-form-item label="Block reason"
-            ><el-input v-model="metadata.blockReason" type="textarea" :rows="3"
-          /></el-form-item>
-          <div class="check-row">
-            <el-checkbox v-model="metadata.highlight">Highlight</el-checkbox
-            ><el-checkbox v-model="metadata.risk">Risk</el-checkbox>
-          </div>
-          <div class="drawer-actions">
-            <a :href="jiraUrl(selectedIssue)" target="_blank" rel="noreferrer"><el-button>Open in Jira</el-button></a
-            ><el-button type="primary" @click="saveMetadata">Save metadata</el-button>
-          </div></el-form
-        >
-      </div></el-drawer
-    >
+      </template>
+      <div v-if="selectedIssue" class="issue-detail">
+        <el-tabs v-model="issueDetailTab" class="detail-tabs">
+          <!-- TAB: Info -->
+          <el-tab-pane label="Thông tin" name="info">
+            <div class="detail-grid">
+              <span>Status<b><el-tag :type="statusType(selectedIssue)">{{ selectedIssue.status }}</el-tag></b></span>
+              <span>Assignee<b>{{ selectedIssue.assigneeName || 'Unassigned' }}</b></span>
+              <span>Sprint<b>{{ selectedIssue.sprint || '—' }}</b></span>
+              <span>Priority<b>{{ selectedIssue.priority || '—' }}</b></span>
+              <span>Start date<b>{{ date(selectedIssue.startDate) }}</b></span>
+              <span>Due date<b>{{ date(selectedIssue.dueDate) }}</b></span>
+              <span class="detail-full">Parent
+                <b v-if="selectedIssue.parentKey">
+                  <a :href="`${settings.baseUrl}/browse/${selectedIssue.parentKey}`" target="_blank" rel="noreferrer" class="parent-link">{{ selectedIssue.parentKey }}</a>
+                  <small>{{ selectedIssue.parentSummary }}</small>
+                </b>
+                <b v-else>—</b>
+              </span>
+              <span class="detail-full">Labels
+                <b v-if="parseLabels(selectedIssue.labels).length">
+                  <span v-for="lbl in parseLabels(selectedIssue.labels)" :key="lbl" class="label-chip">{{ lbl }}</span>
+                </b>
+                <b v-else>—</b>
+              </span>
+            </div>
+            <p v-if="selectedIssue.description" class="description">{{ selectedIssue.description }}</p>
+            <el-divider>Local metadata</el-divider>
+            <el-form label-position="top">
+              <el-form-item label="Internal category"><el-input v-model="metadata.internalCategory" /></el-form-item>
+              <el-form-item label="Report note"><el-input v-model="metadata.reportNote" type="textarea" :rows="4" /></el-form-item>
+              <el-form-item label="Block reason"><el-input v-model="metadata.blockReason" type="textarea" :rows="3" /></el-form-item>
+              <div class="check-row">
+                <el-checkbox v-model="metadata.highlight">Highlight</el-checkbox>
+                <el-checkbox v-model="metadata.risk">Risk</el-checkbox>
+              </div>
+              <div class="drawer-actions">
+                <a :href="jiraUrl(selectedIssue)" target="_blank" rel="noreferrer"><el-button>Open in Jira</el-button></a>
+                <el-button type="primary" @click="saveMetadata">Save metadata</el-button>
+              </div>
+            </el-form>
+          </el-tab-pane>
+
+          <!-- TAB: Comments -->
+          <el-tab-pane name="comments">
+            <template #label>
+              <span>Comments <el-badge v-if="issueComments.length" :value="issueComments.length" type="info" /></span>
+            </template>
+            <div v-loading="loadingDetail">
+              <div v-if="issueComments.length" class="comments-list">
+                <div v-for="c in issueComments" :key="c.id" class="comment-item">
+                  <div class="comment-meta"><b>{{ c.authorName }}</b><span>{{ date(c.createdAtJira) }}</span></div>
+                  <p class="comment-body">{{ c.body || '(no content)' }}</p>
+                </div>
+              </div>
+              <el-empty v-else-if="!loadingDetail" description="Không có comment" :image-size="54" />
+            </div>
+          </el-tab-pane>
+
+          <!-- TAB: Worklogs -->
+          <el-tab-pane name="worklogs">
+            <template #label>
+              <span>Worklogs <el-badge v-if="issueWorklogs.length" :value="issueWorklogs.length" type="info" /></span>
+            </template>
+            <div v-loading="loadingDetail">
+              <div v-if="issueWorklogs.length">
+                <div class="worklog-total">
+                  Tổng: <b>{{ secondsToHours(issueWorklogs.reduce((s, w) => s + w.timeSpentSeconds, 0)) }} giờ</b>
+                </div>
+                <div v-for="w in issueWorklogs" :key="w.id" class="worklog-item">
+                  <div class="worklog-item-meta">
+                    <span class="worklog-author">{{ w.authorName }}</span>
+                    <span class="worklog-time">{{ secondsToHours(w.timeSpentSeconds) }}h</span>
+                    <span class="worklog-date">{{ date(w.started) }}</span>
+                  </div>
+                  <p v-if="w.comment" class="worklog-comment">{{ w.comment }}</p>
+                </div>
+              </div>
+              <el-empty v-else-if="!loadingDetail" description="Chưa có worklog" :image-size="54" />
+            </div>
+          </el-tab-pane>
+        </el-tabs>
+      </div>
+    </el-drawer>
 
     <el-dialog v-model="resourceDialog" :title="editingResourceId ? 'Edit resource' : 'Add resource'" width="560px"
       ><el-form label-position="top"
@@ -1441,5 +1694,259 @@ onMounted(loadAll);
   .detail-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* ── New field styles ── */
+.label-chip {
+  display: inline-block;
+  margin: 1px 3px 1px 0;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #1e3352;
+  color: #8bbdff;
+  font-size: 10px;
+  font-weight: 700;
+}
+.parent-chip {
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: #192f4d;
+  color: #72aeff;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.parent-link {
+  color: #72aeff;
+  text-decoration: none;
+  font-weight: 700;
+}
+.parent-link:hover {
+  text-decoration: underline;
+}
+.text-muted {
+  color: var(--muted);
+}
+/* Detail grid extensions */
+.detail-full {
+  grid-column: 1 / -1;
+}
+.detail-full b {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+}
+.detail-full b small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+}
+/* Detail tabs */
+.detail-tabs {
+  margin-bottom: 4px;
+}
+/* Comments */
+.comments-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 4px;
+}
+.comment-item {
+  padding: 11px 13px;
+  border-radius: 10px;
+  background: #0d1726;
+  border: 1px solid #1e3352;
+}
+.comment-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.comment-meta b {
+  color: #8bbdff;
+  font-size: 11px;
+}
+.comment-meta span {
+  color: var(--muted);
+  font-size: 10px;
+}
+.comment-body {
+  margin: 0;
+  color: #bfcbdb;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+/* Worklogs */
+.worklog-total {
+  padding: 10px 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 10px;
+}
+.worklog-total b {
+  color: #72e59a;
+}
+.worklog-item {
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+.worklog-item-meta {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.worklog-author {
+  color: #8bbdff;
+  font-size: 12px;
+  font-weight: 700;
+  flex: 1;
+}
+.worklog-time {
+  color: #72e59a;
+  font-size: 12px;
+  font-weight: 700;
+}
+.worklog-date {
+  color: var(--muted);
+  font-size: 10px;
+}
+.worklog-comment {
+  margin: 0 0 0 2px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+/* ── Worklog Report ── */
+.worklog-report-card {
+  margin-top: 14px;
+}
+.worklog-report-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.worklog-report-header h3 {
+  margin: 0 0 3px;
+}
+.worklog-report-header small {
+  color: var(--muted);
+  font-size: 10px;
+}
+.worklog-report-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+.worklog-legend {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.legend-dot {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 4px;
+  color: #cce;
+  font-size: 10px;
+  font-weight: 700;
+}
+.worklog-matrix-wrap {
+  overflow-x: auto;
+}
+.worklog-matrix {
+  min-width: 100%;
+}
+.wl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.wl-table th {
+  padding: 6px 8px;
+  background: #0d1726;
+  color: #6a85a8;
+  font-weight: 700;
+  text-align: center;
+  white-space: nowrap;
+  border: 1px solid #1b2f4a;
+}
+.member-col {
+  text-align: left !important;
+  min-width: 130px;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+.total-col {
+  background: #0f1e33 !important;
+  color: #8bbdff !important;
+  min-width: 64px;
+}
+.day-col {
+  min-width: 52px;
+}
+.member-name {
+  padding: 6px 10px;
+  background: #0d1726;
+  color: #c5d5e8;
+  font-weight: 700;
+  white-space: nowrap;
+  border: 1px solid #1b2f4a;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+.wl-cell {
+  width: 52px;
+  height: 34px;
+  text-align: center;
+  border: 1px solid #111c2c;
+  transition: transform 100ms;
+  cursor: default;
+  color: #cce8d8;
+  font-size: 10px;
+  font-weight: 700;
+}
+.wl-cell:hover {
+  outline: 2px solid #4c9eff;
+  outline-offset: -2px;
+  transform: scale(1.1);
+  z-index: 2;
+  position: relative;
+}
+.total-cell {
+  padding: 6px 10px;
+  background: #0f1e33;
+  color: #8bbdff;
+  font-weight: 700;
+  text-align: center;
+  border: 1px solid #1b2f4a;
+  white-space: nowrap;
+}
+.worklog-placeholder {
+  padding: 28px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  border: 1px dashed #2a3f5e;
+  border-radius: 10px;
+}
+.worklog-placeholder b {
+  color: #8bbdff;
 }
 </style>
