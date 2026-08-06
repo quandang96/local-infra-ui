@@ -452,6 +452,35 @@ export function registerJiraRoutes(
     return { rows: await database.listJiraWorklogs(query) };
   });
 
+  app.get('/api/jira/worklogs/report/by-ticket', async (request) => {
+    const query = z
+      .object({
+        dateFrom: z.string().max(40).default(() => new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10)),
+        dateTo: z.string().max(40).default(() => new Date().toISOString().slice(0, 10)),
+        authorName: z.string().max(255).optional(),
+      })
+      .parse(request.query);
+    const rows = await database.worklogReportByTicket(query.dateFrom, query.dateTo, query.authorName);
+    // Build unique author list and day list
+    const authors = [...new Set((rows as any[]).map((r: any) => String(r.authorName)))].sort();
+    const days = [...new Set((rows as any[]).map((r: any) => String(r.day)))].sort();
+    const tickets = [...new Set((rows as any[]).map((r: any) => String(r.jiraKey)))].sort();
+    // Build matrix: { [jiraKey]: { [authorName]: { [day]: totalSeconds } } }
+    const matrix: Record<string, Record<string, Record<string, number>>> = {};
+    const ticketTotals: Record<string, number> = {};
+    for (const row of rows as any[]) {
+      const key = String(row.jiraKey);
+      const auth = String(row.authorName);
+      const d = String(row.day);
+      const secs = Number(row.totalSeconds);
+      if (!matrix[key]) matrix[key] = {};
+      if (!matrix[key][auth]) matrix[key][auth] = {};
+      matrix[key][auth][d] = secs;
+      ticketTotals[key] = (ticketTotals[key] ?? 0) + secs;
+    }
+    return { tickets, authors, days, matrix, ticketTotals, dateFrom: query.dateFrom, dateTo: query.dateTo };
+  });
+
   app.get('/api/jira/worklogs/report', async (request) => {
     const query = z
       .object({

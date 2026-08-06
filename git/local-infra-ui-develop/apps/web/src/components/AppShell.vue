@@ -94,6 +94,8 @@ onMounted(infra.refresh);
             ><el-button size="small" type="danger" plain @click="lifecycle('stop')">Stop</el-button
             ><el-button size="small" @click="infra.refresh">Refresh</el-button>
           </div>
+          <!-- Slot for page-specific actions (e.g. Jira buttons via Teleport) -->
+          <div id="topbar-page-actions"></div>
           <div class="workspace-badge" :class="{ disconnected: !infra.connected }">
             <span></span>{{ infra.connected ? 'coder-workspace · connected' : 'backend · disconnected' }}
           </div>
@@ -135,6 +137,11 @@ onMounted(infra.refresh);
 :global(.topbar-actions) {
   justify-content: flex-end;
   flex-wrap: wrap;
+}
+:global(.jira-topbar-btns) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 :global(.sidebar) {
   display: flex;

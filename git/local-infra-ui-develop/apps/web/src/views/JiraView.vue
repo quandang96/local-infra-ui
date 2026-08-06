@@ -74,6 +74,15 @@ type WorklogReport = {
   dateFrom: string;
   dateTo: string;
 };
+type WorklogByTicketReport = {
+  tickets: string[];
+  authors: string[];
+  days: string[];
+  matrix: Record<string, Record<string, Record<string, number>>>;
+  ticketTotals: Record<string, number>;
+  dateFrom: string;
+  dateTo: string;
+};
 type Worklog = {
   id: string;
   jiraKey: string;
@@ -120,6 +129,25 @@ const worklogReport = ref<WorklogReport | null>(null);
 const worklogReportLoading = ref(false);
 const worklogDateFrom = ref(new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10));
 const worklogDateTo = ref(new Date().toISOString().slice(0, 10));
+// Worklog by ticket report
+const worklogByTicketReport = ref<WorklogByTicketReport | null>(null);
+const worklogByTicketLoading = ref(false);
+const worklogByTicketDateFrom = ref(new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10));
+const worklogByTicketDateTo = ref(new Date().toISOString().slice(0, 10));
+const worklogByTicketAuthor = ref('');
+// Unified worklog state
+const worklogMode = ref<'by-day' | 'by-member' | 'by-ticket'>('by-day');
+const wlDateFrom = ref(new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10));
+const wlDateTo = ref(new Date().toISOString().slice(0, 10));
+const wlAuthorFilter = ref('');
+const wlTicketFilter = ref('');
+const wlLoading = ref(false);
+// For by-member: same WorklogReport but filtered by member
+const wlMemberReport = ref<WorklogReport | null>(null);
+const wlByTicketReport = ref<WorklogByTicketReport | null>(null);
+// allAuthors across last loaded report for filter dropdown
+const wlKnownAuthors = ref<string[]>([]);
+const wlKnownTickets = ref<string[]>([]);
 const defaultSettings: Settings = {
   jiraType: 'cloud',
   baseUrl: '',
@@ -198,12 +226,46 @@ function statusType(issue: Issue) {
   if (issue.statusCategory === 'indeterminate') return 'warning';
   return 'info';
 }
-function date(value?: string) {
+function date(value?: string | Date | null) {
   if (!value) return '—';
-  return new Intl.DateTimeFormat('vi-VN', {
-    dateStyle: 'medium',
-    timeStyle: value.includes('T') ? 'short' : undefined,
-  }).format(new Date(value));
+  // If already a Date object (e.g. from mysql2)
+  if (value instanceof Date) {
+    const dd = String(value.getDate()).padStart(2, '0');
+    const mm = String(value.getMonth() + 1).padStart(2, '0');
+    const yyyy = value.getFullYear();
+    const hh = String(value.getHours()).padStart(2, '0');
+    const min = String(value.getMinutes()).padStart(2, '0');
+    return `${dd}/${mm}/${yyyy} ${hh}:${min}`;
+  }
+  const str = String(value);
+  // Plain date YYYY-MM-DD → parse manually to avoid UTC-offset day shift
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+    const [yyyy, mm, dd] = str.split('-');
+    return `${dd}/${mm}/${yyyy}`;
+  }
+  const d = new Date(str);
+  if (isNaN(d.getTime())) return str;
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const yyyy = d.getFullYear();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${dd}/${mm}/${yyyy} ${hh}:${min}`;
+}
+function formatDay(isoDay: unknown): string {
+  if (!isoDay) return '—';
+  // If Date object from mysql2 (shouldn't happen after DB fix but safeguard)
+  if (isoDay instanceof Date) {
+    const dd = String(isoDay.getUTCDate()).padStart(2, '0');
+    const mm = String(isoDay.getUTCMonth() + 1).padStart(2, '0');
+    const yyyy = isoDay.getUTCFullYear();
+    return `${dd}/${mm}/${yyyy}`;
+  }
+  const str = String(isoDay);
+  // Expect YYYY-MM-DD
+  const m = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+  return str;
 }
 function jiraUrl(issue: Issue) {
   return `${settings.baseUrl}/browse/${encodeURIComponent(issue.jiraKey)}`;
@@ -419,6 +481,49 @@ async function loadWorklogReport() {
   }
 }
 
+async function loadWorklogByTicketReport() {
+  worklogByTicketLoading.value = true;
+  try {
+    const authorParam = worklogByTicketAuthor.value ? `&authorName=${encodeURIComponent(worklogByTicketAuthor.value)}` : '';
+    worklogByTicketReport.value = await api<WorklogByTicketReport>(
+      `/jira/worklogs/report/by-ticket?dateFrom=${worklogByTicketDateFrom.value}&dateTo=${worklogByTicketDateTo.value}${authorParam}`
+    );
+  } catch (cause: unknown) {
+    ElMessage.error(cause instanceof Error ? cause.message : 'Không tải được worklog theo ticket');
+  } finally {
+    worklogByTicketLoading.value = false;
+  }
+}
+
+async function loadActiveWorklog() {
+  wlLoading.value = true;
+  try {
+    if (worklogMode.value === 'by-day' || worklogMode.value === 'by-member') {
+      const authorParam = (worklogMode.value === 'by-member' && wlAuthorFilter.value)
+        ? `&assignee=${encodeURIComponent(wlAuthorFilter.value)}` : '';
+      const data = await api<WorklogReport>(
+        `/jira/worklogs/report?dateFrom=${wlDateFrom.value}&dateTo=${wlDateTo.value}${authorParam}`
+      );
+      wlMemberReport.value = data;
+      // populate author list from members
+      if (data.members.length) wlKnownAuthors.value = [...data.members].sort();
+    } else {
+      const authorParam = wlAuthorFilter.value ? `&authorName=${encodeURIComponent(wlAuthorFilter.value)}` : '';
+      const ticketParam = wlTicketFilter.value ? `&jiraKey=${encodeURIComponent(wlTicketFilter.value)}` : '';
+      const data = await api<WorklogByTicketReport>(
+        `/jira/worklogs/report/by-ticket?dateFrom=${wlDateFrom.value}&dateTo=${wlDateTo.value}${authorParam}${ticketParam}`
+      );
+      wlByTicketReport.value = data;
+      if (data.authors.length) wlKnownAuthors.value = [...data.authors].sort();
+      if (data.tickets.length) wlKnownTickets.value = [...data.tickets].sort();
+    }
+  } catch (cause: unknown) {
+    ElMessage.error(cause instanceof Error ? cause.message : 'Không tải được worklog');
+  } finally {
+    wlLoading.value = false;
+  }
+}
+
 function secondsToHours(seconds: number) {
   return (seconds / 3600).toFixed(1);
 }
@@ -434,10 +539,11 @@ function heatmapColor(seconds: number) {
 }
 
 function exportWorklogCsv() {
-  if (!worklogReport.value) return;
-  const { members, days, matrix, totals } = worklogReport.value;
+  const data = wlMemberReport.value;
+  if (!data) return;
+  const { members, days, matrix, totals } = data;
   const safe = (value: unknown) => `"${String(value ?? '').replaceAll('"', '""')}"`;
-  const header = ['Thành viên', ...days, 'Tổng (giờ)'];
+  const header = ['Thành viên', ...days.map(formatDay), 'Tổng (giờ)'];
   const dataRows = members.map((m) => [
     m,
     ...days.map((d) => secondsToHours(matrix[m]?.[d] ?? 0)),
@@ -454,28 +560,49 @@ function exportWorklogCsv() {
   URL.revokeObjectURL(url);
 }
 
+function exportWorklogByTicketCsv() {
+  const data = wlByTicketReport.value;
+  if (!data) return;
+  const { tickets, authors, days, matrix, ticketTotals } = data;
+  const safe = (value: unknown) => `"${String(value ?? '').replaceAll('"', '""')}"`;
+  const header = ['Ticket', ...days.map(formatDay), 'Tổng (giờ)'];
+  const dataRows: (string | number)[][] = [];
+  for (const ticket of tickets) {
+    const dayTotals = days.map((d) =>
+      Object.values(matrix[ticket] ?? {}).reduce((sum, m) => sum + (m[d] ?? 0), 0)
+    );
+    const total = ticketTotals[ticket] ?? 0;
+    dataRows.push([ticket, ...dayTotals.map(secondsToHours), secondsToHours(total)]);
+  }
+  const blob = new Blob([`\uFEFF${[header, ...dataRows].map((r) => r.map(safe).join(',')).join('\n')}`], {
+    type: 'text/csv;charset=utf-8',
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = 'jira-worklog-by-ticket.csv';
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 onMounted(loadAll);
 </script>
 
 <template>
   <div v-loading="loading" class="jira-workspace">
-    <div class="jira-hero">
-      <div>
-        <span class="eyebrow">TEAM WORK CONTROL CENTER</span>
-        <h2>Jira reporting workspace</h2>
-        <p>Jira là nguồn trạng thái chính · MySQL lưu cache, ghi chú và resource nội bộ.</p>
+    <!-- Teleport Jira action buttons into the global topbar next to "coder-workspace · connected" -->
+    <Teleport to="#topbar-page-actions">
+      <div class="jira-topbar-btns">
+        <el-tag :type="settings.hasToken ? 'success' : 'warning'" effect="dark" size="small">{{ settings.hasToken ? '✓ Token OK' : '⚠ Token missing' }}</el-tag>
+        <a v-if="settings.baseUrl" :href="settings.baseUrl" target="_blank" rel="noreferrer">
+          <el-button size="small">Open Jira ↗</el-button>
+        </a>
+        <el-button size="small" :loading="syncing" type="primary" @click="syncJira">⟳ Sync Jira</el-button>
       </div>
-      <div class="hero-actions">
-        <el-tag :type="settings.hasToken ? 'success' : 'warning'" effect="dark">{{
-          settings.hasToken ? 'Jira token configured' : 'Jira token missing'
-        }}</el-tag
-        ><a v-if="settings.baseUrl" :href="settings.baseUrl" target="_blank" rel="noreferrer"
-          ><el-button>Open Jira</el-button></a
-        ><el-button :loading="syncing" type="primary" @click="syncJira">Sync Jira</el-button>
-      </div>
-    </div>
+    </Teleport>
 
     <el-tabs v-model="activeTab" class="jira-tabs">
+
       <el-tab-pane name="dashboard">
         <template #label>
           <span class="jira-tab-label"
@@ -693,84 +820,197 @@ onMounted(loadAll);
           </section>
         </div>
 
-        <!-- Logwork report section -->
+        <!-- Logwork section thống nhất -->
         <section class="jira-card worklog-report-card">
+          <!-- Header + Mode selector -->
           <div class="worklog-report-header">
             <div>
-              <h3>Logwork theo ngày</h3>
-              <small>Tổng giờ làm việc của từng thành viên theo ngày (từ dữ liệu Jira worklog)</small>
+              <h3>Logwork</h3>
+              <small>Tổng giờ làm việc theo dữ liệu Jira worklog</small>
             </div>
-            <div class="worklog-report-controls">
-              <el-date-picker
-                v-model="worklogDateFrom"
-                type="date"
-                placeholder="Từ ngày"
-                format="YYYY-MM-DD"
-                value-format="YYYY-MM-DD"
-                size="small"
-              />
-              <el-date-picker
-                v-model="worklogDateTo"
-                type="date"
-                placeholder="Đến ngày"
-                format="YYYY-MM-DD"
-                value-format="YYYY-MM-DD"
-                size="small"
-              />
-              <el-button size="small" type="primary" :loading="worklogReportLoading" @click="loadWorklogReport"
-                >Xem báo cáo</el-button
-              >
-              <el-button size="small" :disabled="!worklogReport" @click="exportWorklogCsv">Export CSV</el-button>
-            </div>
+            <el-radio-group v-model="worklogMode" size="small" class="wl-mode-group">
+              <el-radio-button value="by-day">Theo ngày</el-radio-button>
+              <el-radio-button value="by-member">Theo thành viên</el-radio-button>
+              <el-radio-button value="by-ticket">Theo ticket</el-radio-button>
+            </el-radio-group>
           </div>
 
-          <div v-if="worklogReport && worklogReport.members.length" class="worklog-matrix-wrap">
-            <div class="worklog-legend">
-              <span>Giờ log:</span>
-              <span class="legend-dot" style="background:#1d4e38">0-1h</span>
-              <span class="legend-dot" style="background:#37895e">1-2h</span>
-              <span class="legend-dot" style="background:#2f7a56">2-4h</span>
-              <span class="legend-dot" style="background:#276749">4-8h</span>
-              <span class="legend-dot" style="background:#1a6b3c">≥8h</span>
+          <!-- Controls: date range + filters -->
+          <div class="worklog-report-controls wl-controls-bar">
+            <el-date-picker v-model="wlDateFrom" type="date" placeholder="Từ ngày" format="DD/MM/YYYY" value-format="YYYY-MM-DD" size="small" />
+            <el-date-picker v-model="wlDateTo" type="date" placeholder="Đến ngày" format="DD/MM/YYYY" value-format="YYYY-MM-DD" size="small" />
+            <!-- Filter thành viên (dùng cho tất cả 3 modes) -->
+            <el-select
+              v-model="wlAuthorFilter"
+              clearable
+              placeholder="Tất cả thành viên"
+              size="small"
+              style="width: 175px"
+            >
+              <el-option v-for="a in wlKnownAuthors" :key="a" :label="a" :value="a" />
+            </el-select>
+            <!-- Filter ticket (chỉ hiện khi mode by-ticket) -->
+            <el-select
+              v-if="worklogMode === 'by-ticket'"
+              v-model="wlTicketFilter"
+              clearable
+              filterable
+              placeholder="Tất cả ticket"
+              size="small"
+              style="width: 160px"
+            >
+              <el-option v-for="t in wlKnownTickets" :key="t" :label="t" :value="t" />
+            </el-select>
+            <el-button size="small" type="primary" :loading="wlLoading" @click="loadActiveWorklog">Xem báo cáo</el-button>
+            <el-button
+              v-if="worklogMode !== 'by-ticket'"
+              size="small"
+              :disabled="!wlMemberReport"
+              @click="exportWorklogCsv"
+            >Export CSV</el-button>
+            <el-button
+              v-else
+              size="small"
+              :disabled="!wlByTicketReport"
+              @click="exportWorklogByTicketCsv"
+            >Export CSV</el-button>
+          </div>
+
+          <!-- Legend -->
+          <div v-if="(worklogMode !== 'by-ticket' && wlMemberReport) || (worklogMode === 'by-ticket' && wlByTicketReport)" class="worklog-legend">
+            <span>Giờ log:</span>
+            <span class="legend-dot" style="background:#1d4e38">0-1h</span>
+            <span class="legend-dot" style="background:#37895e">1-2h</span>
+            <span class="legend-dot" style="background:#2f7a56">2-4h</span>
+            <span class="legend-dot" style="background:#276749">4-8h</span>
+            <span class="legend-dot" style="background:#1a6b3c">≥8h</span>
+          </div>
+
+          <!-- VIEW: Theo ngày (heatmap thành viên × ngày) -->
+          <template v-if="worklogMode === 'by-day'">
+            <div v-if="wlMemberReport && wlMemberReport.members.length" class="worklog-matrix-wrap">
+              <div class="worklog-matrix">
+                <table class="wl-table">
+                  <thead>
+                    <tr>
+                      <th class="member-col">Thành viên</th>
+                      <th v-for="day in wlMemberReport.days" :key="day" class="day-col">{{ formatDay(day) }}</th>
+                      <th class="total-col">Tổng</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="member in wlMemberReport.members" :key="member">
+                      <td class="member-name">{{ member }}</td>
+                      <td
+                        v-for="day in wlMemberReport.days"
+                        :key="day"
+                        class="wl-cell"
+                        :style="{ background: heatmapColor(wlMemberReport.matrix[member]?.[day] ?? 0) }"
+                        :title="`${member} · ${formatDay(day)}: ${secondsToHours(wlMemberReport.matrix[member]?.[day] ?? 0)}h`"
+                      >
+                        <span v-if="wlMemberReport.matrix[member]?.[day]">
+                          {{ secondsToHours(wlMemberReport.matrix[member][day]) }}
+                        </span>
+                      </td>
+                      <td class="total-cell">{{ secondsToHours(wlMemberReport.totals[member] ?? 0) }}h</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
-            <div class="worklog-matrix">
-              <table class="wl-table">
-                <thead>
-                  <tr>
-                    <th class="member-col">Thành viên</th>
-                    <th v-for="day in worklogReport.days" :key="day" class="day-col">{{ day.slice(5) }}</th>
-                    <th class="total-col">Tổng</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="member in worklogReport.members" :key="member">
-                    <td class="member-name">{{ member }}</td>
-                    <td
-                      v-for="day in worklogReport.days"
-                      :key="day"
-                      class="wl-cell"
-                      :style="{ background: heatmapColor(worklogReport.matrix[member]?.[day] ?? 0) }"
-                      :title="`${member} · ${day}: ${secondsToHours(worklogReport.matrix[member]?.[day] ?? 0)}h`"
+            <el-empty v-else-if="wlMemberReport && !wlMemberReport.members.length" description="Không có dữ liệu logwork" :image-size="60" />
+            <div v-else class="worklog-placeholder"><span>Chọn khoảng ngày và nhấn <b>Xem báo cáo</b>.</span></div>
+          </template>
+
+          <!-- VIEW: Theo thành viên (mỗi người = 1 row tổng theo ngày) -->
+          <template v-else-if="worklogMode === 'by-member'">
+            <div v-if="wlMemberReport && wlMemberReport.members.length" class="worklog-matrix-wrap">
+              <div class="worklog-matrix">
+                <table class="wl-table">
+                  <thead>
+                    <tr>
+                      <th class="member-col">Thành viên</th>
+                      <th v-for="day in wlMemberReport.days" :key="day" class="day-col">{{ formatDay(day) }}</th>
+                      <th class="total-col">Tổng</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      v-for="member in (wlAuthorFilter ? [wlAuthorFilter] : wlMemberReport.members)"
+                      :key="member"
                     >
-                      <span v-if="worklogReport.matrix[member]?.[day]">
-                        {{ secondsToHours(worklogReport.matrix[member][day]) }}
-                      </span>
-                    </td>
-                    <td class="total-cell">{{ secondsToHours(worklogReport.totals[member] ?? 0) }}h</td>
-                  </tr>
-                </tbody>
-              </table>
+                      <td class="member-name">{{ member }}</td>
+                      <td
+                        v-for="day in wlMemberReport.days"
+                        :key="day"
+                        class="wl-cell"
+                        :style="{ background: heatmapColor(wlMemberReport.matrix[member]?.[day] ?? 0) }"
+                        :title="`${member} · ${formatDay(day)}: ${secondsToHours(wlMemberReport.matrix[member]?.[day] ?? 0)}h`"
+                      >
+                        <span v-if="wlMemberReport.matrix[member]?.[day]">
+                          {{ secondsToHours(wlMemberReport.matrix[member][day]) }}
+                        </span>
+                      </td>
+                      <td class="total-cell">{{ secondsToHours(wlMemberReport.totals[member] ?? 0) }}h</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
-          </div>
+            <el-empty v-else-if="wlMemberReport && !wlMemberReport.members.length" description="Không có dữ liệu logwork" :image-size="60" />
+            <div v-else class="worklog-placeholder"><span>Chọn khoảng ngày và nhấn <b>Xem báo cáo</b>.</span></div>
+          </template>
 
-          <el-empty
-            v-else-if="worklogReport && !worklogReport.members.length"
-            description="Không có dữ liệu logwork trong khoảng thời gian này"
-            :image-size="60"
-          />
-          <div v-else class="worklog-placeholder">
-            <span>Chọn khoảng ngày và nhấn <b>Xem báo cáo</b> để hiển thị logwork theo thành viên.</span>
-          </div>
+          <!-- VIEW: Theo ticket (1 row = 1 ticket, cột ngày, không cột thành viên) -->
+          <template v-else>
+            <div v-if="wlByTicketReport && wlByTicketReport.tickets.length" class="worklog-matrix-wrap">
+              <div class="worklog-matrix">
+                <table class="wl-table wl-ticket-table">
+                  <thead>
+                    <tr>
+                      <th class="member-col">Ticket</th>
+                      <th v-for="day in wlByTicketReport.days" :key="day" class="day-col">{{ formatDay(day) }}</th>
+                      <th class="total-col">Tổng</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      v-for="ticket in (wlTicketFilter ? [wlTicketFilter] : wlByTicketReport.tickets)"
+                      :key="ticket"
+                    >
+                      <td class="ticket-key-cell">
+                        <b>{{ ticket }}</b>
+                      </td>
+                      <td
+                        v-for="day in wlByTicketReport.days"
+                        :key="day"
+                        class="wl-cell"
+                        :style="{ background: heatmapColor(
+                          Object.values(wlByTicketReport.matrix[ticket] ?? {}).reduce(
+                            (sum, authMap) => sum + (authMap[day] ?? 0), 0
+                          )
+                        )}"
+                        :title="`${ticket} · ${formatDay(day)}: ${secondsToHours(
+                          Object.values(wlByTicketReport.matrix[ticket] ?? {}).reduce(
+                            (sum, authMap) => sum + (authMap[day] ?? 0), 0
+                          )
+                        )}h`"
+                      >
+                        <span v-if="Object.values(wlByTicketReport.matrix[ticket] ?? {}).some(m => m[day])">
+                          {{ secondsToHours(Object.values(wlByTicketReport.matrix[ticket] ?? {}).reduce((sum, m) => sum + (m[day] ?? 0), 0)) }}
+                        </span>
+                      </td>
+                      <td class="total-cell">
+                        {{ secondsToHours(wlByTicketReport.ticketTotals[ticket] ?? 0) }}h
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <el-empty v-else-if="wlByTicketReport && !wlByTicketReport.tickets.length" description="Không có dữ liệu logwork" :image-size="60" />
+            <div v-else class="worklog-placeholder"><span>Chọn khoảng ngày và nhấn <b>Xem báo cáo</b>.</span></div>
+          </template>
         </section>
       </el-tab-pane>
 
@@ -1088,7 +1328,6 @@ onMounted(loadAll);
 .jira-workspace {
   --jira-blue: #579dff;
 }
-.jira-hero,
 .report-actions,
 .resource-toolbar {
   display: flex;
@@ -1096,36 +1335,14 @@ onMounted(loadAll);
   justify-content: space-between;
   gap: 20px;
 }
-.jira-hero {
-  padding: 20px 22px;
-  border: 1px solid #244873;
-  border-radius: 16px;
-  background: linear-gradient(120deg, #102846, #111b2b 64%, #19213e);
-}
-.eyebrow {
-  color: #8bbdff;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.16em;
-}
-.jira-hero h2 {
-  margin: 5px 0 4px;
-  font-size: 24px;
-}
-.jira-hero p,
 .report-actions p,
 .resource-toolbar p {
   margin: 0;
   color: var(--muted);
   font-size: 12px;
 }
-.hero-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
 .jira-tabs {
-  margin-top: 14px;
+  margin-top: 0;
 }
 .jira-tabs :deep(.el-tabs__header) {
   margin: 0 0 16px;
@@ -1662,7 +1879,6 @@ onMounted(loadAll);
   }
 }
 @media (max-width: 700px) {
-  .jira-hero,
   .report-actions,
   .resource-toolbar,
   .setup-heading {
@@ -1948,5 +2164,42 @@ onMounted(loadAll);
 }
 .worklog-placeholder b {
   color: #8bbdff;
+}
+/* Worklog mode group */
+.wl-mode-group {
+  flex-shrink: 0;
+}
+.wl-controls-bar {
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+/* Ticket-based worklog table */
+.wl-ticket-table .ticket-key-cell {
+  padding: 8px 10px;
+  background: #0d1726;
+  color: #8bbdff;
+  font-weight: 700;
+  border: 1px solid #1b2f4a;
+  vertical-align: middle;
+  white-space: nowrap;
+  text-align: left;
+}
+.wl-ticket-table .ticket-key-cell b {
+  display: block;
+  font-size: 12px;
+  color: #579dff;
+}
+.ticket-total-badge {
+  display: inline-block;
+  margin-top: 3px;
+  background: #132340;
+  color: #72e59a;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+}
+.ticket-first-row td {
+  border-top: 2px solid #253a5e;
 }
 </style>

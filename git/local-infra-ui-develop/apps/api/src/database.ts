@@ -844,17 +844,40 @@ export class AuditDatabase {
   }
 
   async worklogReportByMemberByDay(dateFrom: string, dateTo: string) {
-    // Returns rows: { authorName, day (YYYY-MM-DD), totalSeconds, issueCount }
+    // Returns rows: { authorName, day (YYYY-MM-DD string), totalSeconds, issueCount }
     const [rows] = await this.pool.query<TaskRow[]>(
       `SELECT author_name AS authorName,
-       DATE(started) AS day,
+       DATE_FORMAT(started, '%Y-%m-%d') AS day,
        SUM(time_spent_seconds) AS totalSeconds,
        COUNT(DISTINCT jira_key) AS issueCount
        FROM jira_worklogs
        WHERE started >= ? AND started <= ?
-       GROUP BY author_name, DATE(started)
+       GROUP BY author_name, DATE_FORMAT(started, '%Y-%m-%d')
        ORDER BY author_name, day`,
       [dateFrom, dateTo + 'T23:59:59']
+    );
+    return rows;
+  }
+
+  async worklogReportByTicket(
+    dateFrom: string,
+    dateTo: string,
+    authorName?: string
+  ) {
+    // Returns rows: { jiraKey, authorName, day (YYYY-MM-DD string), totalSeconds }
+    const where: string[] = ['started >= ?', 'started <= ?'];
+    const values: unknown[] = [dateFrom, dateTo + 'T23:59:59'];
+    if (authorName) { where.push('author_name = ?'); values.push(authorName); }
+    const [rows] = await this.pool.query<TaskRow[]>(
+      `SELECT jira_key AS jiraKey,
+       author_name AS authorName,
+       DATE_FORMAT(started, '%Y-%m-%d') AS day,
+       SUM(time_spent_seconds) AS totalSeconds
+       FROM jira_worklogs
+       WHERE ${where.join(' AND ')}
+       GROUP BY jira_key, author_name, DATE_FORMAT(started, '%Y-%m-%d')
+       ORDER BY jira_key, author_name, day`,
+      values
     );
     return rows;
   }
