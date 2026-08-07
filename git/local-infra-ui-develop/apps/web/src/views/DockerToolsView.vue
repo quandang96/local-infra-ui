@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage } from '../ui';
 import { api, post } from '../api';
 import LogPanel from '../components/LogPanel.vue';
 import PanelControls from '../components/PanelControls.vue';
@@ -40,25 +40,16 @@ onMounted(load);
 </script>
 <template>
   <section>
-    <div class="section-title">
-      <div>
-        <h2>Docker Tools</h2>
-        <span>Chạy các lệnh Docker đã được duyệt; kết quả hiển thị trực tiếp bên dưới.</span>
-      </div>
-    </div>
     <section class="panel">
       <header class="panel-header">
-        <div><strong>Command terminal</strong><small>Không cho phép shell command tùy ý</small></div>
+        <div><strong>Command terminal</strong><small>Approved commands only</small></div>
         <PanelControls />
       </header>
       <div class="panel-body docker-command-form">
-        <el-select v-model="commandId"
-          ><el-option
-            v-for="command in commands"
-            :key="command.id"
-            :label="command.label"
-            :value="command.id" /></el-select
-        ><el-button type="primary" :loading="running" @click="run">Run command</el-button>
+        <v-select v-model="commandId" :items="commands" item-title="label" item-value="id" />
+        <v-btn color="primary" variant="flat" prepend-icon="mdi-play" :loading="running" @click="run">
+          Run command
+        </v-btn>
       </div>
     </section>
     <LogPanel v-if="task" v-model:tail="logTail" title="Docker command output" :url="task.eventUrl" />
@@ -75,7 +66,7 @@ onMounted(load);
   gap: 10px;
   align-items: center;
 }
-.docker-command-form .el-select {
+.docker-command-form .v-select {
   width: min(420px, 100%);
 }
 .muted-copy {

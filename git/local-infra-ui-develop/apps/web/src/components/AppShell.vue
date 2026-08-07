@@ -1,12 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { computed, onMounted, ref, watch } from 'vue';
+import { useDisplay } from 'vuetify';
 import { useRoute } from 'vue-router';
 import { post, type Service } from '../api';
 import { useInfraStore } from '../stores/infra';
+import { acceptDialog, cancelDialog, dialogState, ElMessage, messageState } from '../ui';
+
+type NavigationItem = { to: string; label: string; icon: string };
 
 const route = useRoute();
 const infra = useInfraStore();
+const { mobile } = useDisplay();
+const drawerOpen = ref(true);
 const menuCollapsed = ref(false);
 const title = computed(() => String(route.meta.title ?? 'Local Infra'));
 const serviceIdForRoute = computed(() =>
@@ -19,26 +24,49 @@ const serviceIdForRoute = computed(() =>
 const activeService = computed(
   () => infra.services.find((service) => service.id === serviceIdForRoute.value) as Service | undefined
 );
-const navigation = [
-  { to: '/', label: 'Overview', icon: '⌂' },
-  { to: '/mysql', label: 'MySQL', icon: 'DB' },
-  { to: '/gcloud', label: 'gcloud CLI', icon: 'GC' },
-  { to: '/datastore', label: 'Datastore', icon: 'DS' },
-  { to: '/kafka', label: 'Kafka', icon: 'KF' },
-  { to: '/kafka-ui', label: 'Kafka UI', icon: 'UI' },
-  { to: '/spanner', label: 'Spanner', icon: 'SP' },
-  { to: '/keycloak', label: 'Keycloak', icon: 'KC' },
-  { to: '/mailhog', label: 'MailHog', icon: 'MH' },
-  { to: '/bigquery', label: 'BigQuery', icon: 'BQ' },
-  { to: '/jira', label: 'Jira Workspace', icon: 'JR' },
-  { to: '/docker', label: 'Docker Tools', icon: 'DK' },
-  { to: '/app-services', label: 'App Services', icon: 'AS' },
-  { to: '/tasks', label: 'Task History', icon: '↻' },
-  { to: '/system', label: 'System', icon: '◫' },
+const serviceStatus = computed(() =>
+  activeService.value?.runtimeMode === 'one_off' ? 'on demand' : activeService.value?.status
+);
+const menuToggleLabel = computed(() =>
+  mobile.value ? 'Close navigation' : menuCollapsed.value ? 'Expand navigation' : 'Collapse navigation'
+);
+
+const navigation: Array<{ label: string; items: NavigationItem[] }> = [
+  {
+    label: 'Workspace',
+    items: [
+      { to: '/', label: 'Overview', icon: 'mdi-view-dashboard-outline' },
+      { to: '/app-services', label: 'App Services', icon: 'mdi-application-braces-outline' },
+      { to: '/tasks', label: 'Task History', icon: 'mdi-history' },
+    ],
+  },
+  {
+    label: 'Data & messaging',
+    items: [
+      { to: '/mysql', label: 'MySQL', icon: 'mdi-database-outline' },
+      { to: '/datastore', label: 'Datastore', icon: 'mdi-database-search-outline' },
+      { to: '/bigquery', label: 'BigQuery', icon: 'mdi-chart-box-outline' },
+      { to: '/spanner', label: 'Spanner', icon: 'mdi-database-cog-outline' },
+      { to: '/kafka', label: 'Kafka', icon: 'mdi-transit-connection-variant' },
+      { to: '/kafka-ui', label: 'Kafka UI', icon: 'mdi-monitor-dashboard' },
+    ],
+  },
+  {
+    label: 'Tools',
+    items: [
+      { to: '/gcloud', label: 'gcloud CLI', icon: 'mdi-cloud-outline' },
+      { to: '/keycloak', label: 'Keycloak', icon: 'mdi-shield-account-outline' },
+      { to: '/mailhog', label: 'MailHog', icon: 'mdi-email-outline' },
+      { to: '/jira', label: 'Jira Workspace', icon: 'mdi-jira' },
+      { to: '/docker', label: 'Docker Tools', icon: 'mdi-docker' },
+      { to: '/system', label: 'System', icon: 'mdi-server-outline' },
+    ],
+  },
 ];
 
 function toggleMenu() {
-  menuCollapsed.value = !menuCollapsed.value;
+  if (mobile.value) drawerOpen.value = !drawerOpen.value;
+  else menuCollapsed.value = !menuCollapsed.value;
 }
 
 async function lifecycle(action: 'start' | 'stop' | 'restart') {
@@ -52,149 +80,269 @@ async function lifecycle(action: 'start' | 'stop' | 'restart') {
   }
 }
 
+watch(
+  mobile,
+  (isMobile) => {
+    drawerOpen.value = !isMobile;
+  },
+  { immediate: true }
+);
+watch(
+  () => route.fullPath,
+  () => {
+    if (mobile.value) drawerOpen.value = false;
+  }
+);
 onMounted(infra.refresh);
 </script>
 
 <template>
-  <div class="app-shell" :class="{ 'menu-collapsed': menuCollapsed }">
-    <aside class="sidebar">
-      <div class="brand">
-        <b>LI</b>
-        <div class="brand-text"><strong>Local Infra</strong><small>Coder Control Center</small></div>
-      </div>
-      <div class="nav-label">Workspace</div>
-      <RouterLink v-for="item in navigation" :key="item.to" :to="item.to" class="nav-button"
-        ><i>{{ item.icon }}</i
-        ><span class="nav-text">{{ item.label }}</span></RouterLink
-      >
-      <div class="sidebar-note">
-        <strong>Compose project</strong><br />configured from environment<br />
-        <span>{{ infra.services.length }} services · internal only</span>
-      </div>
-      <div class="sidebar-controls">
-        <button type="button" :title="menuCollapsed ? 'Show menu' : 'Hide menu'" @click="toggleMenu">
-          <span aria-hidden="true">{{ menuCollapsed ? '☰' : '‹' }}</span>
-          <span v-if="!menuCollapsed">Hide menu</span>
-        </button>
-      </div>
-    </aside>
-    <main class="main">
-      <header class="topbar">
-        <div>
-          <h1>{{ title }}</h1>
-          <p>Docker Compose project local-infra trong Coder Workspace</p>
+  <v-app class="app-shell">
+    <v-navigation-drawer
+      v-model="drawerOpen"
+      class="sidebar"
+      :rail="!mobile && menuCollapsed"
+      :temporary="mobile"
+      :permanent="!mobile"
+      :width="264"
+      :rail-width="72"
+    >
+      <div class="brand" :class="{ compact: menuCollapsed && !mobile }">
+        <div class="brand-mark"><v-icon icon="mdi-layers-triple-outline" size="22" /></div>
+        <div v-if="mobile || !menuCollapsed" class="brand-copy">
+          <strong>Local Infra</strong>
+          <span>Control Center</span>
         </div>
-        <div class="topbar-actions">
-          <span v-if="activeService" class="status" :class="activeService.status">
-            {{ activeService.runtimeMode === 'one_off' ? 'on demand' : activeService.status }}
-          </span>
-          <div v-if="activeService?.runtimeMode === 'daemon'" class="service-actions">
-            <el-button size="small" type="success" plain @click="lifecycle('start')">Start</el-button
-            ><el-button size="small" type="warning" plain @click="lifecycle('restart')">Restart</el-button
-            ><el-button size="small" type="danger" plain @click="lifecycle('stop')">Stop</el-button
-            ><el-button size="small" @click="infra.refresh">Refresh</el-button>
-          </div>
-          <!-- Slot for page-specific actions (e.g. Jira buttons via Teleport) -->
-          <div id="topbar-page-actions"></div>
-          <div class="workspace-badge" :class="{ disconnected: !infra.connected }">
-            <span></span>{{ infra.connected ? 'coder-workspace · connected' : 'backend · disconnected' }}
-          </div>
+      </div>
+
+      <v-list class="navigation" nav density="comfortable">
+        <template v-for="group in navigation" :key="group.label">
+          <v-list-subheader v-if="mobile || !menuCollapsed">{{ group.label }}</v-list-subheader>
+          <v-list-item
+            v-for="item in group.items"
+            :key="item.to"
+            :to="item.to"
+            :title="item.label"
+            :prepend-icon="item.icon"
+            rounded="lg"
+            color="primary"
+          />
+        </template>
+      </v-list>
+
+      <template #append>
+        <div class="drawer-footer">
+          <v-btn
+            class="collapse-menu-button"
+            block
+            variant="text"
+            :icon="mobile ? 'mdi-close' : menuCollapsed ? 'mdi-chevron-right' : 'mdi-chevron-left'"
+            :title="menuToggleLabel"
+            :aria-label="menuToggleLabel"
+            @click="toggleMenu"
+          />
         </div>
-      </header>
-      <el-alert
-        v-if="infra.error"
-        :title="infra.error"
-        type="error"
-        show-icon
-        :closable="false"
-        style="margin-bottom: 16px"
-      /><slot />
-    </main>
-  </div>
+      </template>
+    </v-navigation-drawer>
+
+    <v-app-bar class="topbar" flat height="72">
+      <v-app-bar-nav-icon v-if="mobile" aria-label="Open navigation" @click="toggleMenu" />
+      <v-app-bar-title>
+        <span class="page-title">{{ title }}</span>
+      </v-app-bar-title>
+      <div class="topbar-actions">
+        <v-chip
+          v-if="activeService"
+          size="small"
+          variant="tonal"
+          :color="serviceStatus === 'running' || serviceStatus === 'healthy' ? 'success' : 'warning'"
+          prepend-icon="mdi-circle-small"
+        >
+          {{ serviceStatus }}
+        </v-chip>
+        <div v-if="activeService?.runtimeMode === 'daemon'" class="service-actions">
+          <v-btn size="small" color="success" icon="mdi-play" title="Start" @click="lifecycle('start')" />
+          <v-btn size="small" color="warning" icon="mdi-restart" title="Restart" @click="lifecycle('restart')" />
+          <v-btn size="small" color="error" icon="mdi-stop" title="Stop" @click="lifecycle('stop')" />
+          <v-btn size="small" icon="mdi-refresh" title="Refresh" @click="infra.refresh" />
+        </div>
+        <div id="topbar-page-actions"></div>
+        <v-chip
+          class="connection-chip"
+          size="small"
+          variant="tonal"
+          :color="infra.connected ? 'success' : 'error'"
+          :prepend-icon="infra.connected ? 'mdi-lan-connect' : 'mdi-lan-disconnect'"
+        >
+          {{ infra.connected ? 'Connected' : 'Disconnected' }}
+        </v-chip>
+      </div>
+    </v-app-bar>
+
+    <v-main>
+      <main class="main-content">
+        <v-alert v-if="infra.error" class="mb-4" :text="infra.error" type="error" variant="tonal" closable />
+        <slot />
+      </main>
+    </v-main>
+
+    <v-snackbar v-model="messageState.open" :color="messageState.type" location="top right" :timeout="3200">
+      {{ messageState.text }}
+      <template #actions>
+        <v-btn icon="mdi-close" variant="text" @click="messageState.open = false" />
+      </template>
+    </v-snackbar>
+
+    <v-dialog v-model="dialogState.open" max-width="480" persistent>
+      <v-card class="confirmation-dialog" rounded="xl">
+        <v-card-title>{{ dialogState.title }}</v-card-title>
+        <v-card-text>
+          <p>{{ dialogState.message }}</p>
+          <v-text-field
+            v-if="dialogState.kind === 'prompt'"
+            v-model="dialogState.value"
+            autofocus
+            :placeholder="dialogState.placeholder"
+            :error-messages="dialogState.error"
+            @keyup.enter="acceptDialog"
+          />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="cancelDialog">Cancel</v-btn>
+          <v-btn color="primary" variant="flat" @click="acceptDialog">
+            {{ dialogState.kind === 'prompt' ? 'Save' : 'Confirm' }}
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+  </v-app>
 </template>
 
 <style scoped>
-.nav-button.router-link-active {
-  background: #142139;
-  border-color: #2d405e;
-  color: white;
+.sidebar {
+  border-right-color: var(--line) !important;
+  background: #091424 !important;
 }
-.nav-button.router-link-active i {
-  background: #2459c4;
-}
-.sidebar-controls {
+.brand {
   display: flex;
-  margin-top: auto;
-  padding: 16px 6px 2px;
+  height: 72px;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+}
+.brand.compact {
+  justify-content: center;
+  padding-inline: 8px;
+}
+.brand-mark {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  place-items: center;
+  border-radius: 13px;
+  background: linear-gradient(145deg, #6ea8fe, #806df5);
+  color: #fff;
+  box-shadow: 0 8px 24px rgb(81 121 234 / 28%);
+}
+.brand-copy {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.brand-copy strong {
+  font-size: 15px;
+  letter-spacing: -0.01em;
+}
+.brand-copy span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.navigation {
+  padding: 4px 10px 14px;
+}
+.navigation :deep(.v-list-subheader) {
+  min-height: 34px;
+  padding-inline: 12px;
+  color: #70829b;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+.navigation :deep(.v-list-item) {
+  min-height: 42px;
+  margin-bottom: 3px;
+  color: #aebdd0;
+}
+.navigation :deep(.v-list-item--active) {
+  background: linear-gradient(90deg, rgb(74 126 218 / 24%), rgb(83 96 180 / 11%));
+  color: #fff;
+}
+.drawer-footer {
+  display: flex;
+  justify-content: center;
+  padding: 10px;
   border-top: 1px solid var(--line);
 }
-:global(.topbar-actions),
-:global(.service-actions) {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.collapse-menu-button {
+  width: 38px;
+  min-width: 38px;
 }
-:global(.topbar-actions) {
-  justify-content: flex-end;
-  flex-wrap: wrap;
+.topbar {
+  border-bottom: 1px solid var(--line) !important;
+  background: rgb(7 16 29 / 88%) !important;
+  backdrop-filter: blur(16px);
 }
+.page-title {
+  font-size: 20px;
+  font-weight: 750;
+  letter-spacing: -0.025em;
+}
+.topbar-actions,
+.service-actions,
 :global(.jira-topbar-btns) {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
 }
-:global(.sidebar) {
-  display: flex;
-  flex-direction: column;
+.topbar-actions {
+  min-width: 0;
+  padding-right: 20px;
 }
-.sidebar-controls button {
-  display: inline-flex;
-  width: 100%;
-  min-height: 36px;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  border: 1px solid #314766;
-  border-radius: 9px;
-  background: linear-gradient(135deg, #172a45, #132138);
-  color: #d9e7fb;
-  font-size: 12px;
+.connection-chip {
   font-weight: 700;
-  cursor: pointer;
-  transition:
-    background 160ms ease,
-    border-color 160ms ease,
-    transform 160ms ease;
 }
-.sidebar-controls button:hover {
-  border-color: #4c77b6;
-  background: linear-gradient(135deg, #1d3c65, #172d4c);
-  transform: translateY(-1px);
+.main-content {
+  width: min(100%, 1680px);
+  min-height: calc(100vh - 72px);
+  margin-inline: auto;
+  padding: 24px 28px 48px;
 }
-:global(.app-shell.menu-collapsed) {
-  grid-template-columns: 56px minmax(0, 1fr);
+.confirmation-dialog p {
+  margin: 0 0 18px;
+  color: var(--muted);
+  line-height: 1.6;
 }
-:global(.app-shell.menu-collapsed .sidebar) {
-  padding: 10px 8px;
+@media (max-width: 960px) {
+  .main-content {
+    padding: 18px 16px 36px;
+  }
+  .topbar-actions {
+    padding-right: 12px;
+  }
+  .service-actions,
+  .connection-chip {
+    display: none;
+  }
 }
-:global(.app-shell.menu-collapsed .brand-text),
-:global(.app-shell.menu-collapsed .brand),
-:global(.app-shell.menu-collapsed .nav-label),
-:global(.app-shell.menu-collapsed .nav-text),
-:global(.app-shell.menu-collapsed .sidebar-note) {
-  display: none;
-}
-:global(.app-shell.menu-collapsed .nav-button) {
-  justify-content: center;
-  padding: 9px 0;
-}
-:global(.app-shell.menu-collapsed .nav-button i) {
-  width: 30px;
-  height: 30px;
-  font-size: 10px;
-}
-:global(.app-shell.menu-collapsed .sidebar-controls) {
-  padding: 0;
-  border: 0;
+@media (max-width: 600px) {
+  #topbar-page-actions {
+    display: none;
+  }
+  .page-title {
+    font-size: 17px;
+  }
 }
 </style>

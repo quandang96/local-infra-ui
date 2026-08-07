@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage } from '../ui';
 import { api, post, type JsonValue, type TableResult } from '../api';
 import LogPanel from '../components/LogPanel.vue';
 import SqlEditor from '../components/SqlEditor.vue';
@@ -90,9 +90,7 @@ onMounted(load);
           <div><strong>Explorer</strong><small>Datasets and tables</small></div>
         </header>
         <div class="explorer-body">
-          <el-select v-model="selectedDataset" placeholder="Select dataset" style="width: 100%">
-            <el-option v-for="dataset in datasets" :key="dataset.id" :label="dataset.id" :value="dataset.id" />
-          </el-select>
+          <v-select v-model="selectedDataset" :items="datasets" item-title="id" item-value="id" label="Dataset" />
           <div v-if="tables.length" class="table-list">
             <button
               v-for="entry in tables"
@@ -104,7 +102,7 @@ onMounted(load);
               ><small>{{ entry.type }}</small>
             </button>
           </div>
-          <el-empty v-else description="No tables in this dataset" :image-size="56" />
+          <v-empty-state v-else icon="mdi-table-off" text="No tables in this dataset" />
         </div>
       </section>
 
@@ -113,8 +111,14 @@ onMounted(load);
           <div>
             <strong>GoogleSQL query</strong><small>Read-only: SELECT, WITH or EXPLAIN · selection runs first</small>
           </div>
-          <el-button type="primary" :loading="loading" :disabled="!status?.available" @click="runQuery"
-            >Run query</el-button
+          <v-btn
+            color="primary"
+            variant="flat"
+            prepend-icon="mdi-play"
+            :loading="loading"
+            :disabled="!status?.available"
+            @click="runQuery"
+            >Run query</v-btn
           >
         </header>
         <SqlEditor ref="editor" v-model="sql" />
@@ -141,7 +145,7 @@ onMounted(load);
           <template #default="scope">{{ formatCell(scope.row[column.key]) }}</template>
         </el-table-column>
       </el-table>
-      <el-empty v-else description="No query result" />
+      <v-empty-state v-else icon="mdi-table-search" text="Run a query to see results" />
     </section>
 
     <LogPanel v-model:tail="logTail" title="BigQuery emulator logs" url="/api/services/bigquery/logs/events" />

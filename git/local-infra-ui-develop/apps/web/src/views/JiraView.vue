@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage, ElMessageBox } from '../ui';
 import { api, del, post } from '../api';
 
 type Issue = {
@@ -185,7 +185,11 @@ const parentOptions = computed(() =>
 );
 function parseLabels(labels?: string): string[] {
   if (!labels) return [];
-  try { return JSON.parse(labels); } catch { return []; }
+  try {
+    return JSON.parse(labels);
+  } catch {
+    return [];
+  }
 }
 const envTemplate = computed(() =>
   settings.jiraType === 'cloud'
@@ -441,7 +445,20 @@ function exportCsv() {
     return `"${guarded.replaceAll('"', '""')}"`;
   };
   const rows = [
-    ['Jira Key', 'Summary', 'Status', 'Assignee', 'Priority', 'Sprint', 'Parent', 'Start date', 'Due date', 'Labels', 'Category', 'Report note'],
+    [
+      'Jira Key',
+      'Summary',
+      'Status',
+      'Assignee',
+      'Priority',
+      'Sprint',
+      'Parent',
+      'Start date',
+      'Due date',
+      'Labels',
+      'Category',
+      'Report note',
+    ],
     ...issues.value.map((issue) => [
       issue.jiraKey,
       issue.summary,
@@ -484,7 +501,9 @@ async function loadWorklogReport() {
 async function loadWorklogByTicketReport() {
   worklogByTicketLoading.value = true;
   try {
-    const authorParam = worklogByTicketAuthor.value ? `&authorName=${encodeURIComponent(worklogByTicketAuthor.value)}` : '';
+    const authorParam = worklogByTicketAuthor.value
+      ? `&authorName=${encodeURIComponent(worklogByTicketAuthor.value)}`
+      : '';
     worklogByTicketReport.value = await api<WorklogByTicketReport>(
       `/jira/worklogs/report/by-ticket?dateFrom=${worklogByTicketDateFrom.value}&dateTo=${worklogByTicketDateTo.value}${authorParam}`
     );
@@ -499,8 +518,10 @@ async function loadActiveWorklog() {
   wlLoading.value = true;
   try {
     if (worklogMode.value === 'by-day' || worklogMode.value === 'by-member') {
-      const authorParam = (worklogMode.value === 'by-member' && wlAuthorFilter.value)
-        ? `&assignee=${encodeURIComponent(wlAuthorFilter.value)}` : '';
+      const authorParam =
+        worklogMode.value === 'by-member' && wlAuthorFilter.value
+          ? `&assignee=${encodeURIComponent(wlAuthorFilter.value)}`
+          : '';
       const data = await api<WorklogReport>(
         `/jira/worklogs/report?dateFrom=${wlDateFrom.value}&dateTo=${wlDateTo.value}${authorParam}`
       );
@@ -568,9 +589,7 @@ function exportWorklogByTicketCsv() {
   const header = ['Ticket', ...days.map(formatDay), 'Tổng (giờ)'];
   const dataRows: (string | number)[][] = [];
   for (const ticket of tickets) {
-    const dayTotals = days.map((d) =>
-      Object.values(matrix[ticket] ?? {}).reduce((sum, m) => sum + (m[d] ?? 0), 0)
-    );
+    const dayTotals = days.map((d) => Object.values(matrix[ticket] ?? {}).reduce((sum, m) => sum + (m[d] ?? 0), 0));
     const total = ticketTotals[ticket] ?? 0;
     dataRows.push([ticket, ...dayTotals.map(secondsToHours), secondsToHours(total)]);
   }
@@ -593,20 +612,26 @@ onMounted(loadAll);
     <!-- Teleport Jira action buttons into the global topbar next to "coder-workspace · connected" -->
     <Teleport to="#topbar-page-actions">
       <div class="jira-topbar-btns">
-        <el-tag :type="settings.hasToken ? 'success' : 'warning'" effect="dark" size="small">{{ settings.hasToken ? '✓ Token OK' : '⚠ Token missing' }}</el-tag>
-        <a v-if="settings.baseUrl" :href="settings.baseUrl" target="_blank" rel="noreferrer">
-          <el-button size="small">Open Jira ↗</el-button>
-        </a>
-        <el-button size="small" :loading="syncing" type="primary" @click="syncJira">⟳ Sync Jira</el-button>
+        <v-chip size="small" :color="settings.hasToken ? 'success' : 'warning'" variant="tonal">
+          {{ settings.hasToken ? 'Token OK' : 'Token missing' }}
+        </v-chip>
+        <v-btn
+          v-if="settings.baseUrl"
+          size="small"
+          :href="settings.baseUrl"
+          target="_blank"
+          append-icon="mdi-open-in-new"
+          >Open Jira</v-btn
+        >
+        <v-btn size="small" color="primary" prepend-icon="mdi-sync" :loading="syncing" @click="syncJira"> Sync </v-btn>
       </div>
     </Teleport>
 
     <el-tabs v-model="activeTab" class="jira-tabs">
-
       <el-tab-pane name="dashboard">
         <template #label>
           <span class="jira-tab-label"
-            ><i>⌂</i><span><b>Tổng quan</b><small>Tiến độ và cảnh báo</small></span></span
+            ><i>⌂</i><span><b>Tổng quan</b></span></span
           >
         </template>
         <div class="jira-metrics">
@@ -615,16 +640,14 @@ onMounted(loadAll);
             ><small>{{ dashboard.metrics.stale ?? 0 }} task không cập nhật quá {{ settings.staleDays }} ngày</small>
           </article>
           <article>
-            <span>In progress</span><strong>{{ dashboard.metrics.inProgress ?? 0 }}</strong
-            ><small>Đang xử lý trong team</small>
+            <span>In progress</span><strong>{{ dashboard.metrics.inProgress ?? 0 }}</strong>
           </article>
           <article class="danger">
             <span>Blocked</span><strong>{{ dashboard.metrics.blocked ?? 0 }}</strong
             ><small>{{ dashboard.metrics.overdue ?? 0 }} task quá hạn</small>
           </article>
           <article class="success">
-            <span>Done this week</span><strong>{{ dashboard.metrics.doneThisWeek ?? 0 }}</strong
-            ><small>Hoàn thành trong 7 ngày</small>
+            <span>Done this week</span><strong>{{ dashboard.metrics.doneThisWeek ?? 0 }}</strong>
           </article>
         </div>
         <div class="jira-grid dashboard-grid">
@@ -632,9 +655,10 @@ onMounted(loadAll);
             <div class="jira-card-head">
               <div>
                 <h3>Recently updated</h3>
-                <small>Cache Jira mới nhất</small>
               </div>
-              <el-button text @click="activeTab = 'issues'">View all</el-button>
+              <v-btn size="small" variant="text" append-icon="mdi-arrow-right" @click="activeTab = 'issues'"
+                >View all</v-btn
+              >
             </div>
             <button
               v-for="issue in dashboard.recentIssues"
@@ -652,9 +676,8 @@ onMounted(loadAll);
             <div class="jira-card-head">
               <div>
                 <h3>Useful links</h3>
-                <small>Resource của team</small>
               </div>
-              <el-button text @click="openResource()">+ Add</el-button>
+              <v-btn size="small" variant="text" prepend-icon="mdi-plus" @click="openResource()">Add</v-btn>
             </div>
             <a
               v-for="item in resources.slice(0, 5)"
@@ -676,10 +699,7 @@ onMounted(loadAll);
       <el-tab-pane name="issues">
         <template #label>
           <span class="jira-tab-label"
-            ><i>✓</i
-            ><span
-              ><b>Issues</b><small>{{ issues.length }} công việc</small></span
-            ></span
+            ><i>✓</i><span><b>Issues</b></span></span
           >
         </template>
         <section class="jira-card">
@@ -740,7 +760,7 @@ onMounted(loadAll);
       <el-tab-pane name="board">
         <template #label>
           <span class="jira-tab-label"
-            ><i>▦</i><span><b>Board</b><small>Theo luồng trạng thái</small></span></span
+            ><i>▦</i><span><b>Board</b></span></span
           >
         </template>
         <div class="board-filters">
@@ -774,14 +794,13 @@ onMounted(loadAll);
       <el-tab-pane name="reports">
         <template #label>
           <span class="jira-tab-label"
-            ><i>↗</i><span><b>Báo cáo</b><small>Weekly và logwork</small></span></span
+            ><i>↗</i><span><b>Báo cáo</b></span></span
           >
         </template>
         <div class="report-actions">
-          <p>Tổng hợp tự động từ cache Jira và metadata lưu trong MySQL.</p>
           <div>
-            <el-button @click="copyReport">Copy Markdown</el-button
-            ><el-button type="primary" @click="exportCsv">Export CSV issues</el-button>
+            <v-btn prepend-icon="mdi-content-copy" @click="copyReport">Copy Markdown</v-btn>
+            <v-btn color="primary" variant="flat" prepend-icon="mdi-download" @click="exportCsv">Export CSV</v-btn>
           </div>
         </div>
         <div class="jira-grid report-grid">
@@ -837,15 +856,31 @@ onMounted(loadAll);
 
           <!-- Controls: date range + filters -->
           <div class="worklog-report-controls wl-controls-bar">
-            <el-date-picker v-model="wlDateFrom" type="date" placeholder="Từ ngày" format="DD/MM/YYYY" value-format="YYYY-MM-DD" size="small" />
-            <el-date-picker v-model="wlDateTo" type="date" placeholder="Đến ngày" format="DD/MM/YYYY" value-format="YYYY-MM-DD" size="small" />
+            <el-date-picker
+              v-model="wlDateFrom"
+              class="wl-control wl-date"
+              type="date"
+              placeholder="Từ ngày"
+              format="DD/MM/YYYY"
+              value-format="YYYY-MM-DD"
+              size="small"
+            />
+            <el-date-picker
+              v-model="wlDateTo"
+              class="wl-control wl-date"
+              type="date"
+              placeholder="Đến ngày"
+              format="DD/MM/YYYY"
+              value-format="YYYY-MM-DD"
+              size="small"
+            />
             <!-- Filter thành viên (dùng cho tất cả 3 modes) -->
             <el-select
               v-model="wlAuthorFilter"
+              class="wl-control wl-author-select"
               clearable
               placeholder="Tất cả thành viên"
               size="small"
-              style="width: 175px"
             >
               <el-option v-for="a in wlKnownAuthors" :key="a" :label="a" :value="a" />
             </el-select>
@@ -853,37 +888,47 @@ onMounted(loadAll);
             <el-select
               v-if="worklogMode === 'by-ticket'"
               v-model="wlTicketFilter"
+              class="wl-control wl-ticket-select"
               clearable
               filterable
               placeholder="Tất cả ticket"
               size="small"
-              style="width: 160px"
             >
               <el-option v-for="t in wlKnownTickets" :key="t" :label="t" :value="t" />
             </el-select>
-            <el-button size="small" type="primary" :loading="wlLoading" @click="loadActiveWorklog">Xem báo cáo</el-button>
-            <el-button
+            <v-btn
+              class="wl-action"
+              size="small"
+              color="primary"
+              variant="flat"
+              :loading="wlLoading"
+              @click="loadActiveWorklog"
+              >Xem báo cáo</v-btn
+            >
+            <v-btn
               v-if="worklogMode !== 'by-ticket'"
+              class="wl-action"
               size="small"
               :disabled="!wlMemberReport"
               @click="exportWorklogCsv"
-            >Export CSV</el-button>
-            <el-button
-              v-else
-              size="small"
-              :disabled="!wlByTicketReport"
-              @click="exportWorklogByTicketCsv"
-            >Export CSV</el-button>
+              >Export CSV</v-btn
+            >
+            <v-btn v-else class="wl-action" size="small" :disabled="!wlByTicketReport" @click="exportWorklogByTicketCsv"
+              >Export CSV</v-btn
+            >
           </div>
 
           <!-- Legend -->
-          <div v-if="(worklogMode !== 'by-ticket' && wlMemberReport) || (worklogMode === 'by-ticket' && wlByTicketReport)" class="worklog-legend">
+          <div
+            v-if="(worklogMode !== 'by-ticket' && wlMemberReport) || (worklogMode === 'by-ticket' && wlByTicketReport)"
+            class="worklog-legend"
+          >
             <span>Giờ log:</span>
-            <span class="legend-dot" style="background:#1d4e38">0-1h</span>
-            <span class="legend-dot" style="background:#37895e">1-2h</span>
-            <span class="legend-dot" style="background:#2f7a56">2-4h</span>
-            <span class="legend-dot" style="background:#276749">4-8h</span>
-            <span class="legend-dot" style="background:#1a6b3c">≥8h</span>
+            <span class="legend-dot" style="background: #1d4e38">0-1h</span>
+            <span class="legend-dot" style="background: #37895e">1-2h</span>
+            <span class="legend-dot" style="background: #2f7a56">2-4h</span>
+            <span class="legend-dot" style="background: #276749">4-8h</span>
+            <span class="legend-dot" style="background: #1a6b3c">≥8h</span>
           </div>
 
           <!-- VIEW: Theo ngày (heatmap thành viên × ngày) -->
@@ -918,8 +963,14 @@ onMounted(loadAll);
                 </table>
               </div>
             </div>
-            <el-empty v-else-if="wlMemberReport && !wlMemberReport.members.length" description="Không có dữ liệu logwork" :image-size="60" />
-            <div v-else class="worklog-placeholder"><span>Chọn khoảng ngày và nhấn <b>Xem báo cáo</b>.</span></div>
+            <el-empty
+              v-else-if="wlMemberReport && !wlMemberReport.members.length"
+              description="Không có dữ liệu logwork"
+              :image-size="60"
+            />
+            <div v-else class="worklog-placeholder">
+              <span>Chọn khoảng ngày và nhấn <b>Xem báo cáo</b>.</span>
+            </div>
           </template>
 
           <!-- VIEW: Theo thành viên (mỗi người = 1 row tổng theo ngày) -->
@@ -935,10 +986,7 @@ onMounted(loadAll);
                     </tr>
                   </thead>
                   <tbody>
-                    <tr
-                      v-for="member in (wlAuthorFilter ? [wlAuthorFilter] : wlMemberReport.members)"
-                      :key="member"
-                    >
+                    <tr v-for="member in wlAuthorFilter ? [wlAuthorFilter] : wlMemberReport.members" :key="member">
                       <td class="member-name">{{ member }}</td>
                       <td
                         v-for="day in wlMemberReport.days"
@@ -957,8 +1005,14 @@ onMounted(loadAll);
                 </table>
               </div>
             </div>
-            <el-empty v-else-if="wlMemberReport && !wlMemberReport.members.length" description="Không có dữ liệu logwork" :image-size="60" />
-            <div v-else class="worklog-placeholder"><span>Chọn khoảng ngày và nhấn <b>Xem báo cáo</b>.</span></div>
+            <el-empty
+              v-else-if="wlMemberReport && !wlMemberReport.members.length"
+              description="Không có dữ liệu logwork"
+              :image-size="60"
+            />
+            <div v-else class="worklog-placeholder">
+              <span>Chọn khoảng ngày và nhấn <b>Xem báo cáo</b>.</span>
+            </div>
           </template>
 
           <!-- VIEW: Theo ticket (1 row = 1 ticket, cột ngày, không cột thành viên) -->
@@ -974,10 +1028,7 @@ onMounted(loadAll);
                     </tr>
                   </thead>
                   <tbody>
-                    <tr
-                      v-for="ticket in (wlTicketFilter ? [wlTicketFilter] : wlByTicketReport.tickets)"
-                      :key="ticket"
-                    >
+                    <tr v-for="ticket in wlTicketFilter ? [wlTicketFilter] : wlByTicketReport.tickets" :key="ticket">
                       <td class="ticket-key-cell">
                         <b>{{ ticket }}</b>
                       </td>
@@ -985,31 +1036,46 @@ onMounted(loadAll);
                         v-for="day in wlByTicketReport.days"
                         :key="day"
                         class="wl-cell"
-                        :style="{ background: heatmapColor(
-                          Object.values(wlByTicketReport.matrix[ticket] ?? {}).reduce(
-                            (sum, authMap) => sum + (authMap[day] ?? 0), 0
-                          )
-                        )}"
+                        :style="{
+                          background: heatmapColor(
+                            Object.values(wlByTicketReport.matrix[ticket] ?? {}).reduce(
+                              (sum, authMap) => sum + (authMap[day] ?? 0),
+                              0
+                            )
+                          ),
+                        }"
                         :title="`${ticket} · ${formatDay(day)}: ${secondsToHours(
                           Object.values(wlByTicketReport.matrix[ticket] ?? {}).reduce(
-                            (sum, authMap) => sum + (authMap[day] ?? 0), 0
+                            (sum, authMap) => sum + (authMap[day] ?? 0),
+                            0
                           )
                         )}h`"
                       >
-                        <span v-if="Object.values(wlByTicketReport.matrix[ticket] ?? {}).some(m => m[day])">
-                          {{ secondsToHours(Object.values(wlByTicketReport.matrix[ticket] ?? {}).reduce((sum, m) => sum + (m[day] ?? 0), 0)) }}
+                        <span v-if="Object.values(wlByTicketReport.matrix[ticket] ?? {}).some((m) => m[day])">
+                          {{
+                            secondsToHours(
+                              Object.values(wlByTicketReport.matrix[ticket] ?? {}).reduce(
+                                (sum, m) => sum + (m[day] ?? 0),
+                                0
+                              )
+                            )
+                          }}
                         </span>
                       </td>
-                      <td class="total-cell">
-                        {{ secondsToHours(wlByTicketReport.ticketTotals[ticket] ?? 0) }}h
-                      </td>
+                      <td class="total-cell">{{ secondsToHours(wlByTicketReport.ticketTotals[ticket] ?? 0) }}h</td>
                     </tr>
                   </tbody>
                 </table>
               </div>
             </div>
-            <el-empty v-else-if="wlByTicketReport && !wlByTicketReport.tickets.length" description="Không có dữ liệu logwork" :image-size="60" />
-            <div v-else class="worklog-placeholder"><span>Chọn khoảng ngày và nhấn <b>Xem báo cáo</b>.</span></div>
+            <el-empty
+              v-else-if="wlByTicketReport && !wlByTicketReport.tickets.length"
+              description="Không có dữ liệu logwork"
+              :image-size="60"
+            />
+            <div v-else class="worklog-placeholder">
+              <span>Chọn khoảng ngày và nhấn <b>Xem báo cáo</b>.</span>
+            </div>
           </template>
         </section>
       </el-tab-pane>
@@ -1017,15 +1083,11 @@ onMounted(loadAll);
       <el-tab-pane name="resources">
         <template #label>
           <span class="jira-tab-label"
-            ><i>⌁</i
-            ><span
-              ><b>Tài nguyên</b><small>{{ resources.length }} liên kết</small></span
-            ></span
+            ><i>⌁</i><span><b>Tài nguyên</b></span></span
           >
         </template>
         <div class="resource-toolbar">
-          <p>Chỉ lưu link và metadata, không tải nội dung tài liệu về local.</p>
-          <el-button type="primary" @click="openResource()">+ Add resource</el-button>
+          <v-btn color="primary" variant="flat" prepend-icon="mdi-plus" @click="openResource()">Add resource</v-btn>
         </div>
         <section class="jira-card">
           <el-table :data="resources" row-key="id"
@@ -1045,8 +1107,10 @@ onMounted(loadAll);
               ></el-table-column
             ><el-table-column width="120"
               ><template #default="{ row }"
-                ><el-button text @click.stop="openResource(row)">Edit</el-button
-                ><el-button text type="danger" @click.stop="removeResource(row)">Delete</el-button></template
+                ><v-btn size="small" variant="text" @click.stop="openResource(row)">Edit</v-btn
+                ><v-btn size="small" variant="text" color="error" @click.stop="removeResource(row)"
+                  >Delete</v-btn
+                ></template
               ></el-table-column
             ></el-table
           >
@@ -1056,7 +1120,7 @@ onMounted(loadAll);
       <el-tab-pane name="settings">
         <template #label>
           <span class="jira-tab-label"
-            ><i>⚙</i><span><b>Cấu hình</b><small>Kết nối và đồng bộ</small></span></span
+            ><i>⚙</i><span><b>Cấu hình</b></span></span
           >
         </template>
         <section class="jira-setup">
@@ -1100,7 +1164,9 @@ onMounted(loadAll);
               </article>
             </div>
             <div class="env-example">
-              <div><span>Backend environment</span><el-button text @click="copyEnvTemplate">Copy</el-button></div>
+              <div>
+                <span>Backend environment</span><v-btn size="small" variant="text" @click="copyEnvTemplate">Copy</v-btn>
+              </div>
               <pre>{{ envTemplate }}</pre>
               <small>Restart API/Control Center sau khi thay đổi biến môi trường.</small>
             </div>
@@ -1171,10 +1237,12 @@ onMounted(loadAll);
                   ><el-input-number v-model="settings.staleDays" :min="1" :max="365"
                 /></el-form-item>
               </div>
-              <el-button type="primary" @click="saveSettings">Lưu cấu hình</el-button
-              ><el-button :loading="testingConnection" @click="testConnection"
-                >Test kết nối trực tiếp</el-button
-              ></el-form
+              <v-btn color="primary" variant="flat" prepend-icon="mdi-content-save-outline" @click="saveSettings"
+                >Lưu</v-btn
+              >
+              <v-btn :loading="testingConnection" prepend-icon="mdi-connection" @click="testConnection">
+                Test kết nối
+              </v-btn></el-form
             >
           </section>
           <section class="jira-card">
@@ -1211,20 +1279,42 @@ onMounted(loadAll);
           <!-- TAB: Info -->
           <el-tab-pane label="Thông tin" name="info">
             <div class="detail-grid">
-              <span>Status<b><el-tag :type="statusType(selectedIssue)">{{ selectedIssue.status }}</el-tag></b></span>
-              <span>Assignee<b>{{ selectedIssue.assigneeName || 'Unassigned' }}</b></span>
-              <span>Sprint<b>{{ selectedIssue.sprint || '—' }}</b></span>
-              <span>Priority<b>{{ selectedIssue.priority || '—' }}</b></span>
-              <span>Start date<b>{{ date(selectedIssue.startDate) }}</b></span>
-              <span>Due date<b>{{ date(selectedIssue.dueDate) }}</b></span>
-              <span class="detail-full">Parent
+              <span
+                >Status<b
+                  ><el-tag :type="statusType(selectedIssue)">{{ selectedIssue.status }}</el-tag></b
+                ></span
+              >
+              <span
+                >Assignee<b>{{ selectedIssue.assigneeName || 'Unassigned' }}</b></span
+              >
+              <span
+                >Sprint<b>{{ selectedIssue.sprint || '—' }}</b></span
+              >
+              <span
+                >Priority<b>{{ selectedIssue.priority || '—' }}</b></span
+              >
+              <span
+                >Start date<b>{{ date(selectedIssue.startDate) }}</b></span
+              >
+              <span
+                >Due date<b>{{ date(selectedIssue.dueDate) }}</b></span
+              >
+              <span class="detail-full"
+                >Parent
                 <b v-if="selectedIssue.parentKey">
-                  <a :href="`${settings.baseUrl}/browse/${selectedIssue.parentKey}`" target="_blank" rel="noreferrer" class="parent-link">{{ selectedIssue.parentKey }}</a>
+                  <a
+                    :href="`${settings.baseUrl}/browse/${selectedIssue.parentKey}`"
+                    target="_blank"
+                    rel="noreferrer"
+                    class="parent-link"
+                    >{{ selectedIssue.parentKey }}</a
+                  >
                   <small>{{ selectedIssue.parentSummary }}</small>
                 </b>
                 <b v-else>—</b>
               </span>
-              <span class="detail-full">Labels
+              <span class="detail-full"
+                >Labels
                 <b v-if="parseLabels(selectedIssue.labels).length">
                   <span v-for="lbl in parseLabels(selectedIssue.labels)" :key="lbl" class="label-chip">{{ lbl }}</span>
                 </b>
@@ -1235,15 +1325,19 @@ onMounted(loadAll);
             <el-divider>Local metadata</el-divider>
             <el-form label-position="top">
               <el-form-item label="Internal category"><el-input v-model="metadata.internalCategory" /></el-form-item>
-              <el-form-item label="Report note"><el-input v-model="metadata.reportNote" type="textarea" :rows="4" /></el-form-item>
-              <el-form-item label="Block reason"><el-input v-model="metadata.blockReason" type="textarea" :rows="3" /></el-form-item>
+              <el-form-item label="Report note"
+                ><el-input v-model="metadata.reportNote" type="textarea" :rows="4"
+              /></el-form-item>
+              <el-form-item label="Block reason"
+                ><el-input v-model="metadata.blockReason" type="textarea" :rows="3"
+              /></el-form-item>
               <div class="check-row">
                 <el-checkbox v-model="metadata.highlight">Highlight</el-checkbox>
                 <el-checkbox v-model="metadata.risk">Risk</el-checkbox>
               </div>
               <div class="drawer-actions">
-                <a :href="jiraUrl(selectedIssue)" target="_blank" rel="noreferrer"><el-button>Open in Jira</el-button></a>
-                <el-button type="primary" @click="saveMetadata">Save metadata</el-button>
+                <v-btn :href="jiraUrl(selectedIssue)" target="_blank" append-icon="mdi-open-in-new">Open in Jira</v-btn>
+                <v-btn color="primary" variant="flat" @click="saveMetadata">Save metadata</v-btn>
               </div>
             </el-form>
           </el-tab-pane>
@@ -1256,7 +1350,10 @@ onMounted(loadAll);
             <div v-loading="loadingDetail">
               <div v-if="issueComments.length" class="comments-list">
                 <div v-for="c in issueComments" :key="c.id" class="comment-item">
-                  <div class="comment-meta"><b>{{ c.authorName }}</b><span>{{ date(c.createdAtJira) }}</span></div>
+                  <div class="comment-meta">
+                    <b>{{ c.authorName }}</b
+                    ><span>{{ date(c.createdAtJira) }}</span>
+                  </div>
                   <p class="comment-body">{{ c.body || '(no content)' }}</p>
                 </div>
               </div>
@@ -1317,8 +1414,8 @@ onMounted(loadAll);
         ><el-form-item label="Description"
           ><el-input v-model="resourceForm.description" type="textarea" :rows="3" /></el-form-item></el-form
       ><template #footer
-        ><el-button @click="resourceDialog = false">Cancel</el-button
-        ><el-button type="primary" @click="saveResource">Save</el-button></template
+        ><v-btn variant="text" @click="resourceDialog = false">Cancel</v-btn
+        ><v-btn color="primary" variant="flat" @click="saveResource">Save</v-btn></template
       ></el-dialog
     >
   </div>
@@ -1332,14 +1429,12 @@ onMounted(loadAll);
 .resource-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 20px;
 }
-.report-actions p,
-.resource-toolbar p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
+.report-actions > div {
+  display: flex;
+  gap: 8px;
 }
 .jira-tabs {
   margin-top: 0;
@@ -1368,18 +1463,18 @@ onMounted(loadAll);
 }
 .jira-tab-label {
   display: flex;
-  min-width: 126px;
+  min-width: 96px;
   align-items: center;
   gap: 9px;
-  padding: 9px 11px;
+  padding: 8px 10px;
   border: 1px solid transparent;
   border-radius: 10px;
   transition: 160ms ease;
 }
 .jira-tab-label > i {
   display: grid;
-  flex: 0 0 29px;
-  height: 29px;
+  flex: 0 0 27px;
+  height: 27px;
   place-items: center;
   border-radius: 8px;
   background: #182840;
@@ -2171,7 +2266,52 @@ onMounted(loadAll);
 }
 .wl-controls-bar {
   margin-bottom: 12px;
+  align-items: center;
   flex-wrap: wrap;
+}
+.wl-control {
+  flex: 0 0 auto;
+}
+.wl-date {
+  width: 142px;
+}
+.wl-author-select {
+  width: 175px;
+}
+.wl-ticket-select {
+  width: 160px;
+}
+.wl-controls-bar :deep(.el-input__wrapper),
+.wl-controls-bar :deep(.el-select__wrapper) {
+  min-height: 32px !important;
+  padding-block: 0 !important;
+}
+.wl-controls-bar :deep(.el-date-editor.el-input),
+.wl-controls-bar :deep(.el-select) {
+  height: 32px;
+}
+.wl-controls-bar :deep(.el-input__inner),
+.wl-controls-bar :deep(.el-select__selected-item) {
+  font-size: 11px;
+  line-height: 32px;
+}
+.wl-controls-bar :deep(.v-btn.wl-action) {
+  min-height: 32px !important;
+  height: 32px;
+  font-size: 11px !important;
+}
+@media (max-width: 680px) {
+  .wl-control,
+  .wl-date,
+  .wl-author-select,
+  .wl-ticket-select {
+    width: 100%;
+  }
+  .wl-controls-bar :deep(.el-date-editor.el-input),
+  .wl-controls-bar :deep(.el-select),
+  .wl-controls-bar :deep(.v-btn.wl-action) {
+    width: 100%;
+  }
 }
 /* Ticket-based worklog table */
 .wl-ticket-table .ticket-key-cell {

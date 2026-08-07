@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage, ElMessageBox } from '../ui';
 import { api, del, post, type JsonRecord, type TableResult } from '../api';
 import LogPanel from '../components/LogPanel.vue';
 import PanelControls from '../components/PanelControls.vue';
@@ -74,7 +74,10 @@ onMounted(load);
         <header class="panel-header">
           <div><strong>Kafka workspace</strong><small>Topics, partitions và consumer groups</small></div>
           <div>
-            <el-button type="primary" size="small" @click="createOpen = true">Create topic</el-button><PanelControls />
+            <v-btn size="small" color="primary" variant="flat" prepend-icon="mdi-plus" @click="createOpen = true">
+              Create topic
+            </v-btn>
+            <PanelControls />
           </div>
         </header>
         <el-tabs
@@ -104,34 +107,37 @@ onMounted(load);
       <section class="panel">
         <header class="panel-header"><strong>Message producer</strong><PanelControls /></header>
         <div class="panel-body">
-          <el-select v-model="topic" style="width: 100%; margin-bottom: 8px"
-            ><el-option
-              v-for="item in namedRows(topics)"
-              :key="text(item.name)"
-              :label="text(item.name)"
-              :value="text(item.name)" /></el-select
-          ><el-input v-model="key" placeholder="Message key" /><el-input
-            v-model="value"
-            type="textarea"
-            :rows="8"
-            style="margin-top: 8px"
-          />
+          <v-select v-model="topic" :items="namedRows(topics).map((item) => text(item.name))" label="Topic" />
+          <v-text-field v-model="key" class="mt-3" label="Message key" />
+          <v-textarea v-model="value" class="mt-3" label="Message value" :rows="8" />
           <div class="toolbar">
-            <el-button type="primary" @click="produce">Produce</el-button
-            ><el-button type="danger" plain @click="removeTopic">Delete selected topic</el-button>
+            <v-btn color="primary" variant="flat" prepend-icon="mdi-send" @click="produce">Produce</v-btn>
+            <v-btn color="error" prepend-icon="mdi-delete-outline" @click="removeTopic">Delete topic</v-btn>
           </div>
         </div>
       </section>
     </div>
-    <el-dialog v-model="createOpen" title="Create Kafka topic"
-      ><el-form label-position="top"
-        ><el-form-item label="Topic name"><el-input v-model="newTopic" /></el-form-item
-        ><el-form-item label="Partitions"
-          ><el-input-number v-model="partitionCount" :min="1" :max="24" /></el-form-item></el-form
-      ><template #footer
-        ><el-button @click="createOpen = false">Cancel</el-button
-        ><el-button type="primary" @click="createTopic">Create</el-button></template
-      ></el-dialog
-    ><LogPanel v-model:tail="logTail" title="Kafka broker logs" url="/api/services/kafka/logs/events" />
+    <v-dialog v-model="createOpen" max-width="520">
+      <v-card rounded="xl">
+        <v-card-title>Create Kafka topic</v-card-title>
+        <v-card-text>
+          <v-text-field v-model="newTopic" label="Topic name" autofocus />
+          <v-text-field
+            v-model.number="partitionCount"
+            class="mt-3"
+            type="number"
+            label="Partitions"
+            min="1"
+            max="24"
+          />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="createOpen = false">Cancel</v-btn>
+          <v-btn color="primary" variant="flat" @click="createTopic">Create</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+    <LogPanel v-model:tail="logTail" title="Kafka broker logs" url="/api/services/kafka/logs/events" />
   </section>
 </template>

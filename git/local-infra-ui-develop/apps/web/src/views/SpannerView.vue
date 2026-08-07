@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage, ElMessageBox } from '../ui';
 import { api, post, type TableResult } from '../api';
 import SqlEditor from '../components/SqlEditor.vue';
 import LogPanel from '../components/LogPanel.vue';
@@ -169,11 +169,23 @@ onMounted(load);
       <section class="panel">
         <header class="panel-header"><strong>Spanner explorer</strong><PanelControls /></header>
         <div class="panel-body">
-          <el-select v-model="instance" style="width: 100%; margin-bottom: 8px" @change="handleInstanceChange"
-            ><el-option v-for="item in instances" :key="item.id" :label="item.id" :value="item.id" /></el-select
-          ><el-select v-model="database" style="width: 100%" @change="handleDatabaseChange"
-            ><el-option v-for="item in databases" :key="item.id" :label="item.id" :value="item.id"
-          /></el-select>
+          <v-select
+            v-model="instance"
+            :items="instances"
+            item-title="id"
+            item-value="id"
+            label="Instance"
+            @update:model-value="handleInstanceChange"
+          />
+          <v-select
+            v-model="database"
+            class="mt-3"
+            :items="databases"
+            item-title="id"
+            item-value="id"
+            label="Database"
+            @update:model-value="handleDatabaseChange"
+          />
           <div class="list">
             <template v-for="item in namedRows(tables)" :key="item.name">
               <button :class="{ active: selectedTable === item.name }" @click="toggleTable(item.name)">
@@ -198,10 +210,12 @@ onMounted(load);
         <div class="panel-body">
           <SqlEditor ref="editor" v-model="sql" />
           <div class="toolbar">
-            <el-button type="primary" :loading="executing" @click="executeAll">Execute all</el-button>
-            <el-button :loading="executing" @click="executeSelection">Execute selection</el-button>
-            <el-button @click="saveQuery">Save SQL</el-button>
-            <el-button @click="openSavedQueries">Open SQL</el-button>
+            <v-btn color="primary" variant="flat" prepend-icon="mdi-play" :loading="executing" @click="executeAll">
+              Execute all
+            </v-btn>
+            <v-btn :loading="executing" @click="executeSelection">Execute selection</v-btn>
+            <v-btn prepend-icon="mdi-content-save-outline" @click="saveQuery">Save</v-btn>
+            <v-btn prepend-icon="mdi-folder-open-outline" @click="openSavedQueries">Open</v-btn>
             <span class="toolbar-hint">Highlight one SELECT/WITH statement to run only that selection.</span>
           </div>
           <el-table :data="result?.rows" stripe max-height="310"
@@ -218,18 +232,23 @@ onMounted(load);
         </div>
       </section>
     </div>
-    <el-dialog v-model="savedQueriesOpen" title="Saved SQL" width="min(880px, 92vw)">
-      <el-table
-        :data="savedQueries"
-        class="saved-query-table"
-        empty-text="No SQL saved for this database yet."
-        @row-click="openSavedQuery"
-      >
-        <el-table-column prop="name" label="Name" min-width="180" />
-        <el-table-column prop="sql" label="SQL" min-width="440" show-overflow-tooltip />
-      </el-table>
-      <template #footer><span class="dialog-footer">Click a row to open it in the query editor.</span></template>
-    </el-dialog>
+    <v-dialog v-model="savedQueriesOpen" max-width="880">
+      <v-card rounded="xl">
+        <v-card-title>Saved SQL</v-card-title>
+        <v-card-text>
+          <el-table
+            :data="savedQueries"
+            class="saved-query-table"
+            empty-text="No SQL saved for this database yet."
+            @row-click="openSavedQuery"
+          >
+            <el-table-column prop="name" label="Name" min-width="180" />
+            <el-table-column prop="sql" label="SQL" min-width="440" show-overflow-tooltip />
+          </el-table>
+          <p class="dialog-footer">Select a row to open it in the query editor.</p>
+        </v-card-text>
+      </v-card>
+    </v-dialog>
     <LogPanel v-model:tail="logTail" title="Spanner emulator logs" url="/api/services/spanner/logs/events" />
   </section>
 </template>

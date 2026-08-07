@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage } from '../ui';
 import { useRoute } from 'vue-router';
 import { api, post, type Service } from '../api';
 import LogPanel from '../components/LogPanel.vue';
@@ -67,10 +67,10 @@ watch(serviceId, load, { immediate: true });
         >
       </div>
       <div v-if="service.runtimeMode === 'daemon'" class="toolbar">
-        <el-button type="success" plain @click="lifecycle('start')">Start</el-button>
-        <el-button type="warning" plain @click="lifecycle('restart')">Restart</el-button>
-        <el-button type="danger" plain @click="lifecycle('stop')">Stop</el-button>
-        <el-button :loading="loading" @click="load">Refresh</el-button>
+        <v-btn color="success" prepend-icon="mdi-play" @click="lifecycle('start')">Start</v-btn>
+        <v-btn color="warning" prepend-icon="mdi-restart" @click="lifecycle('restart')">Restart</v-btn>
+        <v-btn color="error" prepend-icon="mdi-stop" @click="lifecycle('stop')">Stop</v-btn>
+        <v-btn prepend-icon="mdi-refresh" :loading="loading" @click="load">Refresh</v-btn>
       </div>
       <p v-else class="muted-copy">This is an on-demand Compose tool and cannot be started as a daemon.</p>
     </div>

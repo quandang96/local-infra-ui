@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage } from '../ui';
 import { api } from '../api';
 import LogPanel from '../components/LogPanel.vue';
 import PanelControls from '../components/PanelControls.vue';
@@ -32,13 +32,13 @@ onMounted(check);
   <section>
     <section class="panel embedded-kafka-ui">
       <header class="panel-header">
+        <div><strong>Kafka UI</strong><small>Embedded broker dashboard</small></div>
         <div>
-          <strong>Kafka UI</strong><small>Original Kafka UI, proxied through Control Center for secure embedding</small>
-        </div>
-        <div>
-          <el-tag :type="status?.available ? 'success' : 'danger'">HTTP {{ status?.statusCode ?? '—' }}</el-tag
-          ><el-button style="margin-left: 8px" @click="open">Open new tab</el-button
-          ><el-button style="margin-left: 8px" @click="check">Refresh status</el-button>
+          <v-chip size="small" :color="status?.available ? 'success' : 'error'" variant="tonal">
+            HTTP {{ status?.statusCode ?? '—' }}
+          </v-chip>
+          <v-btn size="small" append-icon="mdi-open-in-new" @click="open">Open</v-btn>
+          <v-btn size="small" icon="mdi-refresh" title="Refresh" @click="check" />
           <PanelControls />
         </div>
       </header>
@@ -50,7 +50,7 @@ onMounted(check);
           <div class="big-check">!</div>
           <h2>Kafka UI unavailable</h2>
           <p>HTTP {{ status?.statusCode ?? '—' }} · {{ status?.durationMs ?? '—' }} ms</p>
-          <el-button @click="check">Try again</el-button>
+          <v-btn prepend-icon="mdi-refresh" @click="check">Try again</v-btn>
         </div>
       </div>
     </section>
