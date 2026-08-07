@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage } from '../ui';
 import { api, post } from '../api';
 import LogPanel from '../components/LogPanel.vue';
 import PanelControls from '../components/PanelControls.vue';
@@ -39,20 +39,15 @@ onMounted(load);
     <div class="workspace">
       <section class="panel">
         <header class="panel-header">
-          <div><strong>Approved command catalog</strong><small>Không nhận shell command tùy ý</small></div>
+          <div><strong>Command catalog</strong><small>Approved commands only</small></div>
           <PanelControls />
         </header>
         <div class="panel-body">
-          <el-select v-model="actionId" style="width: 100%"
-            ><el-option
-              v-for="action in actions"
-              :key="action.id"
-              :label="action.label"
-              :value="action.id" /></el-select
-          ><el-input v-model="project" placeholder="Project override" style="margin-top: 10px" />
+          <v-select v-model="actionId" :items="actions" item-title="label" item-value="id" />
+          <v-text-field v-model="project" class="mt-3" label="Project override" />
           <div class="toolbar">
-            <el-button type="primary" @click="run">Run action</el-button
-            ><el-button type="danger" plain :disabled="!task" @click="cancel">Cancel</el-button>
+            <v-btn color="primary" variant="flat" prepend-icon="mdi-play" @click="run">Run action</v-btn>
+            <v-btn color="error" :disabled="!task" prepend-icon="mdi-stop" @click="cancel">Cancel</v-btn>
           </div>
         </div>
       </section>

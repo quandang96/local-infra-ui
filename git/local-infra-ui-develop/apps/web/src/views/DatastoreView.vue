@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage } from '../ui';
 import { api, post, type JsonRecord, type TableResult } from '../api';
 import LogPanel from '../components/LogPanel.vue';
 import PanelControls from '../components/PanelControls.vue';
@@ -53,9 +53,11 @@ onMounted(load);
       <section class="panel">
         <header class="panel-header"><strong>Kind explorer</strong><PanelControls /></header>
         <div class="panel-body">
-          <el-select v-model="namespace" style="width: 100%" @change="load"
-            ><el-option label="(default)" value="default"
-          /></el-select>
+          <v-select
+            v-model="namespace"
+            :items="[{ title: '(default)', value: 'default' }]"
+            @update:model-value="load"
+          />
           <div class="list">
             <button
               v-for="item in kinds"
@@ -75,13 +77,10 @@ onMounted(load);
         <header class="panel-header"><strong>Entity browser</strong><PanelControls /></header>
         <div class="panel-body">
           <div class="filter">
-            <el-input v-model="property" placeholder="Property" /><el-select v-model="operator"
-              ><el-option value="=" label="=" /><el-option value=">=" label=">=" /><el-option
-                value="<="
-                label="<=" /></el-select
-            ><el-input v-model="value" placeholder="Value" /><el-button type="primary" @click="query"
-              >Apply filter</el-button
-            >
+            <v-text-field v-model="property" label="Property" />
+            <v-select v-model="operator" :items="['=', '>=', '<=']" aria-label="Operator" />
+            <v-text-field v-model="value" label="Value" />
+            <v-btn color="primary" variant="flat" @click="query">Apply filter</v-btn>
           </div>
           <el-table :data="result?.rows" stripe max-height="330" @row-click="detail"
             ><el-table-column

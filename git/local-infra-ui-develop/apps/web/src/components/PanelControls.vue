@@ -19,10 +19,14 @@ async function toggleFullscreen(event: MouseEvent) {
 
 <template>
   <div class="panel-controls">
-    <button type="button" :title="collapsed ? 'Expand panel' : 'Collapse panel'" @click="toggleCollapse">
-      <span aria-hidden="true">{{ collapsed ? '+' : '−' }}</span>
-    </button>
-    <button type="button" title="Fullscreen panel" @click="toggleFullscreen"><span aria-hidden="true">⛶</span></button>
+    <v-btn
+      size="x-small"
+      variant="text"
+      :icon="collapsed ? 'mdi-chevron-down' : 'mdi-chevron-up'"
+      :title="collapsed ? 'Expand panel' : 'Collapse panel'"
+      @click="toggleCollapse"
+    />
+    <v-btn size="x-small" variant="text" icon="mdi-fullscreen" title="Fullscreen panel" @click="toggleFullscreen" />
   </div>
 </template>
 
@@ -30,33 +34,12 @@ async function toggleFullscreen(event: MouseEvent) {
 .panel-controls {
   display: inline-flex;
   flex: 0 0 auto;
-  gap: 2px;
+  gap: 1px;
   margin-left: auto;
-  padding: 3px;
-  border: 1px solid #2a3d59;
-  border-radius: 9px;
-  background: #0c1727;
-  box-shadow: inset 0 1px rgb(255 255 255 / 4%);
-}
-.panel-controls button {
-  display: grid;
-  width: 28px;
-  height: 28px;
-  place-items: center;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: #aebfd5;
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-  transition:
-    background 150ms ease,
-    color 150ms ease;
-}
-.panel-controls button:hover {
-  background: #223957;
-  color: #fff;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgb(7 16 29 / 52%);
 }
 :global(.panel.panel-collapsed > :not(.panel-header)) {
   display: none !important;

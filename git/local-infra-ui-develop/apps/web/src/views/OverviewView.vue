@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ElMessage } from 'element-plus';
+import { ElMessage } from '../ui';
 import { post } from '../api';
 import { useInfraStore } from '../stores/infra';
 import PanelControls from '../components/PanelControls.vue';
@@ -40,33 +40,43 @@ async function bulk(actionId: 'compose.startAll' | 'compose.stopAll' | 'compose.
   <section>
     <div class="metric-grid">
       <article class="metric">
-        <small>CPU · workspace</small><strong>{{ infra.overview.system.cpuCores ?? '—' }} cores</strong
-        ><span>Node / cgroup visibility</span>
+        <div class="metric-icon"><v-icon icon="mdi-chip" /></div>
+        <div>
+          <small>CPU</small><strong>{{ infra.overview.system.cpuCores ?? '—' }} cores</strong>
+        </div>
       </article>
       <article class="metric">
-        <small>Memory</small><strong>{{ fmtBytes(infra.overview.system.memory?.used) }}</strong
-        ><span>{{ fmtBytes(infra.overview.system.memory?.available) }} available</span>
+        <div class="metric-icon"><v-icon icon="mdi-memory" /></div>
+        <div>
+          <small>Memory used</small><strong>{{ fmtBytes(infra.overview.system.memory?.used) }}</strong>
+        </div>
       </article>
       <article class="metric">
-        <small>Docker disk</small><strong>{{ fmtBytes(infra.overview.system.docker?.LayersSize) }}</strong
-        ><span>images and volumes</span>
+        <div class="metric-icon"><v-icon icon="mdi-harddisk" /></div>
+        <div>
+          <small>Docker disk</small><strong>{{ fmtBytes(infra.overview.system.docker?.LayersSize) }}</strong>
+        </div>
       </article>
       <article class="metric">
-        <small>Services</small
-        ><strong>{{ infra.overview.counts.running ?? 0 }} / {{ infra.overview.counts.totalDaemons ?? 5 }}</strong
-        ><span>{{ infra.overview.counts.unhealthy ?? 0 }} unhealthy</span>
+        <div class="metric-icon"><v-icon icon="mdi-server-network" /></div>
+        <div>
+          <small>Services running</small>
+          <strong>{{ infra.overview.counts.running ?? 0 }} / {{ infra.overview.counts.totalDaemons ?? 5 }}</strong>
+        </div>
       </article>
     </div>
     <div class="section-title">
       <div>
-        <h2>Local services &amp; tools</h2>
-        <span>Chọn service hoặc công cụ để mở workspace chuyên biệt</span>
+        <h2>Services</h2>
+        <span>Trạng thái hạ tầng trong workspace</span>
       </div>
-      <div>
-        <el-button size="small" @click="bulk('compose.startAll')">Start all</el-button
-        ><el-button size="small" @click="bulk('compose.restartUnhealthy')">Restart unhealthy</el-button
-        ><el-button size="small" type="danger" plain @click="bulk('compose.stopAll')">Stop all</el-button
-        ><el-button size="small" :loading="infra.loading" @click="infra.refresh">Refresh</el-button>
+      <div class="section-actions">
+        <v-btn size="small" color="success" prepend-icon="mdi-play" @click="bulk('compose.startAll')">Start all</v-btn>
+        <v-btn size="small" color="warning" prepend-icon="mdi-restart" @click="bulk('compose.restartUnhealthy')">
+          Restart unhealthy
+        </v-btn>
+        <v-btn size="small" color="error" prepend-icon="mdi-stop" @click="bulk('compose.stopAll')">Stop all</v-btn>
+        <v-btn size="small" icon="mdi-refresh" :loading="infra.loading" title="Refresh" @click="infra.refresh" />
       </div>
     </div>
     <div class="service-grid">
@@ -85,11 +95,8 @@ async function bulk(actionId: 'compose.startAll' | 'compose.stopAll' | 'compose.
           }}</span>
         </div>
         <div class="card-meta">
-          <span
-            >Image <b>{{ service.image }}</b></span
-          ><span
-            >Ports <b>{{ service.ports.join(' / ') || '—' }}</b></span
-          >
+          <span><v-icon icon="mdi-cube-outline" size="14" /> {{ service.image }}</span>
+          <span><v-icon icon="mdi-lan" size="14" /> {{ service.ports.join(' / ') || 'No exposed port' }}</span>
         </div></RouterLink
       >
       <RouterLink v-for="tool in overviewTools" :key="tool.id" :to="`/${tool.id}`" class="service-card">
@@ -101,20 +108,17 @@ async function bulk(actionId: 'compose.startAll' | 'compose.stopAll' | 'compose.
           <span class="status" :class="tool.status">on demand</span>
         </div>
         <div class="card-meta">
-          <span
-            >Tool <b>{{ tool.image }}</b></span
-          ><span
-            >Scope <b>{{ tool.ports.join(' / ') }}</b></span
-          >
+          <span><v-icon icon="mdi-tools" size="14" /> {{ tool.image }}</span>
+          <span><v-icon icon="mdi-crosshairs-gps" size="14" /> {{ tool.ports.join(' / ') }}</span>
         </div>
       </RouterLink>
     </div>
     <section class="panel">
       <header class="panel-header">
-        <div><strong>Recent tasks</strong><small>Audit trail persisted in SQLite</small></div>
+        <strong>Recent tasks</strong>
         <div>
-          <RouterLink to="/tasks"><el-button size="small">Open history</el-button></RouterLink
-          ><PanelControls />
+          <v-btn to="/tasks" size="small" variant="text" append-icon="mdi-arrow-right">View all</v-btn>
+          <PanelControls />
         </div>
       </header>
       <el-table :data="infra.tasks.slice(0, 8)" stripe

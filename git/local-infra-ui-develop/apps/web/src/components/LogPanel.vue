@@ -82,21 +82,22 @@ onBeforeUnmount(() => {
       </div>
       <div class="log-tools">
         <div class="log-filters">
-          <el-select v-model="tail" size="small" style="width: 100px" @change="changeTail"
-            ><el-option :value="10" label="Tail 10" /><el-option :value="50" label="Tail 50" /><el-option
-              :value="100"
-              label="Tail 100" /><el-option :value="500" label="Tail 500" /><el-option
-              :value="1000"
-              label="Tail 1000" /></el-select
-          ><el-select v-model="stream" size="small" style="width: 100px"
-            ><el-option value="all" label="All" /><el-option value="stdout" label="stdout" /><el-option
-              value="stderr"
-              label="stderr" /><el-option value="system" label="system" /></el-select
-          ><el-input v-model="search" size="small" placeholder="Search logs" clearable />
+          <v-select
+            v-model="tail"
+            :items="[10, 50, 100, 500, 1000].map((value) => ({ title: `Tail ${value}`, value }))"
+            style="width: 112px"
+            aria-label="Log tail"
+            @update:model-value="changeTail"
+          />
+          <v-select v-model="stream" :items="['all', 'stdout', 'stderr', 'system']" style="width: 112px" />
+          <v-text-field v-model="search" placeholder="Search logs" clearable prepend-inner-icon="mdi-magnify" />
         </div>
         <div class="log-actions">
-          <el-button size="small" @click="copy">Copy</el-button
-          ><el-button size="small" type="danger" plain @click="clear">Clear UI</el-button><PanelControls />
+          <v-btn size="small" prepend-icon="mdi-content-copy" @click="copy">Copy</v-btn>
+          <v-btn size="small" color="error" variant="tonal" prepend-icon="mdi-delete-outline" @click="clear">
+            Clear
+          </v-btn>
+          <PanelControls />
         </div>
       </div>
     </header>
@@ -142,7 +143,7 @@ onBeforeUnmount(() => {
 .log-filters {
   flex: 0 1 auto;
 }
-.log-filters :deep(.el-input) {
+.log-filters :deep(.v-text-field) {
   width: clamp(160px, 18vw, 220px);
   min-width: 0;
   flex: 0 1 190px;
@@ -162,7 +163,7 @@ onBeforeUnmount(() => {
     flex-basis: 100%;
     flex-wrap: wrap;
   }
-  .log-filters :deep(.el-input) {
+  .log-filters :deep(.v-text-field) {
     flex: 1 1 170px;
   }
 }

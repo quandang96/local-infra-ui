@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage } from '../ui';
 import { api } from '../api';
 import LogPanel from '../components/LogPanel.vue';
 import PanelControls from '../components/PanelControls.vue';
@@ -32,17 +32,13 @@ onMounted(load);
   <section>
     <section class="panel embedded-redash">
       <header class="panel-header">
+        <div><strong>MySQL in Redash</strong><small>Redash datasource · mysql:3306/app</small></div>
         <div>
-          <strong>MySQL in Redash</strong
-          ><small
-            >Original Redash UI · first use: create the Redash admin account, then add MySQL datasource at host
-            <code>mysql</code>, port <code>3306</code>, database <code>app</code>.</small
-          >
-        </div>
-        <div>
-          <el-tag :type="status?.available ? 'success' : 'danger'">HTTP {{ status?.statusCode ?? '—' }}</el-tag
-          ><el-button style="margin-left: 8px" @click="open">Open new tab</el-button
-          ><el-button style="margin-left: 8px" @click="load">Refresh</el-button>
+          <v-chip size="small" :color="status?.available ? 'success' : 'error'" variant="tonal">
+            HTTP {{ status?.statusCode ?? '—' }}
+          </v-chip>
+          <v-btn size="small" append-icon="mdi-open-in-new" @click="open">Open</v-btn>
+          <v-btn size="small" icon="mdi-refresh" title="Refresh" @click="load" />
           <PanelControls />
         </div>
       </header>
@@ -54,7 +50,7 @@ onMounted(load);
           <div class="big-check">!</div>
           <h2>Redash is unavailable</h2>
           <p>HTTP {{ status?.statusCode ?? '—' }} · {{ status?.durationMs ?? '—' }} ms</p>
-          <el-button @click="load">Try again</el-button>
+          <v-btn prepend-icon="mdi-refresh" @click="load">Try again</v-btn>
         </div>
       </div>
     </section>

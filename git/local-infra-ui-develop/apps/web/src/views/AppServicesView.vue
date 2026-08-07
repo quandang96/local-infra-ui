@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage, ElMessageBox } from '../ui';
 import { api, del, post } from '../api';
 import LogPanel from '../components/LogPanel.vue';
 import PanelControls from '../components/PanelControls.vue';
@@ -159,8 +159,8 @@ onMounted(load);
         <header class="panel-header">
           <strong>Services</strong>
           <div class="panel-actions">
-            <el-button class="add-service-button" type="primary" @click="create">Add service</el-button
-            ><PanelControls />
+            <v-btn color="primary" variant="flat" prepend-icon="mdi-plus" @click="create">Add service</v-btn>
+            <PanelControls />
           </div>
         </header>
         <div class="panel-body service-list">
@@ -185,9 +185,7 @@ onMounted(load);
         <header class="panel-header">
           <div class="service-detail-title">
             <strong>{{ selected ? selected.name : 'Select a service' }}</strong>
-            <small>{{
-              selected ? `Preset command: ${selected.command}` : 'Use Add service to create a new configuration.'
-            }}</small>
+            <small v-if="selected">{{ selected.command }}</small>
           </div>
           <PanelControls />
         </header>
@@ -211,15 +209,21 @@ onMounted(load);
             </el-form-item>
           </el-form>
           <div class="toolbar">
-            <el-button type="primary" :loading="saving" :disabled="!selected" @click="save"
-              >Save configuration</el-button
+            <v-btn
+              color="primary"
+              variant="flat"
+              prepend-icon="mdi-content-save-outline"
+              :loading="saving"
+              :disabled="!selected"
+              @click="save"
+              >Save</v-btn
             >
             <template v-if="selected">
-              <el-button type="success" plain @click="lifecycle('start')">Start</el-button>
-              <el-button type="warning" plain @click="lifecycle('restart')">Restart</el-button>
-              <el-button type="danger" plain @click="lifecycle('stop')">Stop</el-button>
-              <a v-if="testUrl" :href="testUrl" target="_blank" rel="noopener"><el-button>Open test page</el-button></a>
-              <el-button type="danger" text @click="remove">Remove</el-button>
+              <v-btn color="success" prepend-icon="mdi-play" @click="lifecycle('start')">Start</v-btn>
+              <v-btn color="warning" prepend-icon="mdi-restart" @click="lifecycle('restart')">Restart</v-btn>
+              <v-btn color="error" prepend-icon="mdi-stop" @click="lifecycle('stop')">Stop</v-btn>
+              <v-btn v-if="testUrl" :href="testUrl" target="_blank" append-icon="mdi-open-in-new">Open</v-btn>
+              <v-btn color="error" variant="text" prepend-icon="mdi-delete-outline" @click="remove">Remove</v-btn>
             </template>
           </div>
         </div>
@@ -252,8 +256,8 @@ onMounted(load);
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="addServiceVisible = false">Cancel</el-button>
-        <el-button type="primary" :loading="adding" @click="addService">Add service</el-button>
+        <v-btn variant="text" @click="addServiceVisible = false">Cancel</v-btn>
+        <v-btn color="primary" variant="flat" :loading="adding" @click="addService">Add service</v-btn>
       </template>
     </el-dialog>
   </section>

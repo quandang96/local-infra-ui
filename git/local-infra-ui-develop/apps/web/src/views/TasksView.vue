@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage, ElMessageBox } from '../ui';
 import { api, del } from '../api';
 import { useInfraStore } from '../stores/infra';
 import PanelControls from '../components/PanelControls.vue';
@@ -68,21 +68,23 @@ onMounted(refresh);
 <template>
   <section class="panel">
     <header class="panel-header">
-      <div><strong>Task History</strong><small>Audit trail</small></div>
+      <strong>Task history</strong>
       <div class="panel-actions">
-        <el-button type="danger" plain :disabled="!selectedTasks.length" @click="removeSelected"
-          >Delete selected</el-button
+        <v-btn color="error" prepend-icon="mdi-delete-outline" :disabled="!selectedTasks.length" @click="removeSelected"
+          >Delete selected</v-btn
         >
-        <el-button :loading="loading || infra.loading" @click="refresh">Refresh</el-button><PanelControls />
+        <v-btn icon="mdi-refresh" title="Refresh" :loading="loading || infra.loading" @click="refresh" />
+        <PanelControls />
       </div>
     </header>
     <div class="panel-body task-filters">
-      <el-input v-model="search" clearable placeholder="Search task ID, service, action or status" />
-      <el-select v-model="status" clearable placeholder="All statuses">
-        <el-option label="Queued" value="queued" /><el-option label="Running" value="running" />
-        <el-option label="Succeeded" value="succeeded" /><el-option label="Failed" value="failed" />
-        <el-option label="Cancelled" value="cancelled" />
-      </el-select>
+      <v-text-field v-model="search" clearable prepend-inner-icon="mdi-magnify" label="Search task history" />
+      <v-select
+        v-model="status"
+        clearable
+        label="Status"
+        :items="['queued', 'running', 'succeeded', 'failed', 'cancelled']"
+      />
     </div>
     <el-table :data="rows" stripe @selection-change="selectedTasks = $event"
       ><el-table-column type="selection" width="48" /><el-table-column
@@ -108,10 +110,10 @@ onMounted(refresh);
 .task-filters {
   padding-bottom: 12px;
 }
-.task-filters :deep(.el-input) {
+.task-filters :deep(.v-text-field) {
   max-width: 440px;
 }
-.task-filters :deep(.el-select) {
+.task-filters :deep(.v-select) {
   width: 160px;
 }
 @media (max-width: 820px) {
