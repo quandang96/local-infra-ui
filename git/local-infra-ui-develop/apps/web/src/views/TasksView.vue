@@ -86,7 +86,7 @@ onMounted(refresh);
         :items="['queued', 'running', 'succeeded', 'failed', 'cancelled']"
       />
     </div>
-    <el-table :data="rows" stripe @selection-change="selectedTasks = $event"
+    <el-table :data="rows" stripe max-height="calc(100vh - 260px)" @selection-change="selectedTasks = $event"
       ><el-table-column type="selection" width="48" /><el-table-column
         prop="id"
         label="Task ID"

@@ -314,18 +314,6 @@ onMounted(load);
   align-items: center;
   gap: 10px;
 }
-:global(.service-manager:has(> .panel:last-child.panel-collapsed)) {
-  grid-template-columns: minmax(260px, 0.55fr) minmax(0, 1.45fr) !important;
-}
-:global(.service-manager > .panel:last-child.panel-collapsed .panel-header) {
-  justify-content: space-between;
-  min-height: 58px;
-  padding: 12px 16px;
-}
-:global(.service-manager > .panel:last-child.panel-collapsed .panel-header .service-detail-title) {
-  display: block !important;
-  min-width: 0;
-}
 @media (max-width: 1180px) {
   .service-manager {
     grid-template-columns: 1fr;

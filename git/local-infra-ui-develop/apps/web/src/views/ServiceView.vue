@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { ElMessage } from '../ui';
 import { useRoute } from 'vue-router';
-import { api, post, type Service } from '../api';
+import { api, post, serviceStatusClass, serviceStatusLabel, type Service } from '../api';
 import LogPanel from '../components/LogPanel.vue';
 import PanelControls from '../components/PanelControls.vue';
 import { useInfraStore } from '../stores/infra';
@@ -54,7 +54,10 @@ watch(serviceId, load, { immediate: true });
     <div v-if="service" class="panel-body">
       <div class="service-details">
         <span
-          >Status <b class="status" :class="service.status">{{ service.status }}</b></span
+          >Status
+          <b class="status" :class="serviceStatusClass(service.status)">{{
+            serviceStatusLabel(service.status)
+          }}</b></span
         >
         <span
           >Image <b>{{ service.image }}</b></span

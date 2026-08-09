@@ -20,6 +20,21 @@ export type Service = {
   error?: string | null;
 };
 
+const serviceStatusLabels: Record<string, string> = {
+  healthy: 'Healthy',
+  running: 'Running',
+  starting: 'Starting',
+  unhealthy: 'Unhealthy',
+  stopped: 'Stopped',
+  not_created: 'Not created',
+  tool: 'On demand',
+  unknown: 'Unavailable',
+};
+
+export const serviceStatusLabel = (status?: string | null) => serviceStatusLabels[status ?? ''] ?? 'Unavailable';
+export const serviceStatusClass = (status?: string | null) =>
+  status && serviceStatusLabels[status] ? status : 'unknown';
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body !== undefined && !headers.has('content-type')) headers.set('content-type', 'application/json');

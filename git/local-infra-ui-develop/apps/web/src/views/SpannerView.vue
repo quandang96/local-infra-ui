@@ -240,6 +240,7 @@ onMounted(load);
             :data="savedQueries"
             class="saved-query-table"
             empty-text="No SQL saved for this database yet."
+            max-height="320"
             @row-click="openSavedQuery"
           >
             <el-table-column prop="name" label="Name" min-width="180" />

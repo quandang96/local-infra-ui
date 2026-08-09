@@ -122,19 +122,19 @@ Service `daemon` có thể Start/Stop/Restart, xem log và xuất hiện trong t
 
 Các giá trị bên dưới có sẵn trong `.env.example`; thay đổi theo port/hostname của project. Khi Control Center nằm cùng Docker network với target service, dùng hostname service Compose (ví dụ `mysql`, `kafka`, `spanner`) thay vì `localhost`.
 
-| Nhóm          | Biến cấu hình                                                                                                                                     |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Web/API       | `PORT`, `HOST`, `ALLOWED_ORIGIN`, `TRUST_CODER_PROXY`, `CODER_ACTOR_HEADER`                                                                       |
-| Task database | `TASK_DB_PATH`                                                                                                                                    |
-| MySQL         | `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`                                                                      |
-| Datastore     | `DATASTORE_EMULATOR_HOST`, `DATASTORE_PROJECT_ID`                                                                                                 |
-| Kafka         | `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_UI_INTERNAL_URL`, `KAFKA_UI_OPEN_URL`                                                                           |
-| Spanner       | `SPANNER_EMULATOR_HOST`, `SPANNER_PROJECT_ID`, `SPANNER_INSTANCE_ID`, `SPANNER_DATABASE_ID`                                                       |
-| Redash        | `REDASH_INTERNAL_URL`, `REDASH_OPEN_URL`                                                                                                          |
-| Keycloak      | `KEYCLOAK_INTERNAL_URL`, `KEYCLOAK_OPEN_URL`                                                                                                      |
-| MailHog       | `MAILHOG_INTERNAL_URL`, `MAILHOG_OPEN_URL`                                                                                                        |
-| BigQuery      | `BIGQUERY_API_ENDPOINT`, `BIGQUERY_PROJECT_ID`                                                                                                    |
-| Jira          | `JIRA_TYPE`, `JIRA_BASE_URL`, `JIRA_INTERNAL_URL`, `JIRA_JQL`, `JIRA_ALLOWED_PROJECTS`, `JIRA_API_TOKEN`, `JIRA_EMAIL`, `JIRA_REQUEST_TIMEOUT_MS` |
+| Nhóm          | Biến cấu hình                                                                                                                                                           |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Web/API       | `PORT`, `HOST`, `ALLOWED_ORIGIN`, `TRUST_CODER_PROXY`, `CODER_ACTOR_HEADER`                                                                                             |
+| Task database | `TASK_DB_PATH`                                                                                                                                                          |
+| MySQL         | `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`                                                                                            |
+| Datastore     | `DATASTORE_EMULATOR_HOST`, `DATASTORE_PROJECT_ID`                                                                                                                       |
+| Kafka         | `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_UI_INTERNAL_URL`, `KAFKA_UI_OPEN_URL`                                                                                                 |
+| Spanner       | `SPANNER_EMULATOR_HOST`, `SPANNER_PROJECT_ID`, `SPANNER_INSTANCE_ID`, `SPANNER_DATABASE_ID`                                                                             |
+| Redash        | `REDASH_INTERNAL_URL`, `REDASH_OPEN_URL`                                                                                                                                |
+| Keycloak      | `KEYCLOAK_INTERNAL_URL`, `KEYCLOAK_OPEN_URL`                                                                                                                            |
+| MailHog       | `MAILHOG_INTERNAL_URL`, `MAILHOG_OPEN_URL`                                                                                                                              |
+| BigQuery      | `BIGQUERY_API_ENDPOINT`, `BIGQUERY_PROJECT_ID`                                                                                                                          |
+| Jira          | `JIRA_TYPE`, `JIRA_BASE_URL`, `JIRA_INTERNAL_URL`, `JIRA_JQL`, `JIRA_ALLOWED_PROJECTS`, `JIRA_CUSTOM_FIELDS`, `JIRA_API_TOKEN`, `JIRA_EMAIL`, `JIRA_REQUEST_TIMEOUT_MS` |
 
 `KAFKA_UI_OPEN_URL` và `REDASH_OPEN_URL` là URL mà browser người dùng có thể mở, thường là URL Coder proxy. Các biến `*_INTERNAL_URL` là URL API container dùng để health check trong Docker network.
 
@@ -142,7 +142,7 @@ Stack mẫu mở Keycloak tại port `8082` (tài khoản dev `admin` / `admin`)
 
 ## Jira Workspace
 
-Mục **Jira Workspace** gom tất cả thao tác vào một màn hình với các tab Dashboard, Issues, Board, Reports, Resources và Settings. API không sinh issue mẫu: dashboard chỉ hiển thị issue đã đọc trực tiếp từ Jira qua REST API. MySQL giữ cache để làm báo cáo và cache được reconcile theo kết quả Jira thật sau mỗi lần sync.
+Mục **Jira Workspace** gom tất cả thao tác vào một màn hình với các tab Dashboard, Issues, Board, Reports và Settings. API không sinh issue mẫu: dashboard chỉ hiển thị issue đã đọc trực tiếp từ Jira qua REST API. MySQL giữ cache để làm báo cáo và cache được reconcile theo kết quả Jira thật sau mỗi lần sync.
 
 ### Kết nối Jira Cloud Free để test
 
@@ -160,15 +160,16 @@ JIRA_EMAIL=your-email@example.com
 JIRA_API_TOKEN=<atlassian-api-token>
 JIRA_JQL=project = LOCAL ORDER BY updated DESC
 JIRA_ALLOWED_PROJECTS=LOCAL
+JIRA_CUSTOM_FIELDS=[{"id":"customfield_10043","label":"Sprint","role":"sprint"},{"id":"customfield_10016","label":"Story points","path":"value"},{"id":"customfield_10042","label":"Team","path":"name"}]
 ```
 
 4. Restart API/Control Center. Trong **Jira Workspace → Cấu hình**, chọn Jira Cloud, nhập đúng Base URL/JQL/allowlist, lưu, bấm **Test kết nối trực tiếp**, rồi **Sync Jira**.
 
-`JIRA_INTERNAL_URL` có thể để trống khi backend truy cập được `JIRA_BASE_URL`. Token chỉ được gửi từ backend khi gọi Jira; frontend và MySQL không nhận token.
+`JIRA_INTERNAL_URL` có thể để trống khi backend truy cập được `JIRA_BASE_URL`. `JIRA_CUSTOM_FIELDS` là JSON array, mỗi phần tử có `id` (Jira field ID), `label` (tên hiển thị) và `path` tùy chọn để lấy giá trị bên trong cấu trúc trả về của Jira, ví dụ `value`, `name` hoặc `0.name`. Dùng thêm `role: "sprint"` để ánh xạ custom field vào cột Sprint, Detail và bộ lọc Sprint; nhãn `Sprint` hoặc `sprints` cũng được tự nhận diện. Có thể khai báo tối đa 30 field và cần restart Control Center, sau đó sync lại Jira. Token chỉ được gửi từ backend khi gọi Jira; frontend và MySQL không nhận token.
 
 Để chuyển sang Jira khách hàng, đổi `JIRA_TYPE`, `JIRA_BASE_URL`, `JIRA_INTERNAL_URL` và `JIRA_API_TOKEN`; với Jira Cloud đặt thêm `JIRA_EMAIL`. Nếu database Control Center đã tồn tại, cập nhật Base URL, Team JQL và allowlist trong tab **Cấu hình**. Jira Data Center dùng PAT theo Bearer auth; Jira Cloud dùng email + API token theo Basic auth. Token không được nhận hoặc trả về qua API và không được lưu trong MySQL.
 
-Sync hiện là read-only: Jira giữ status, assignee và workflow; MySQL chỉ giữ cache issue cùng report note, internal category, blocker/risk/highlight, resource link, lịch sử sync và audit log. CSV export có chặn ký tự mở đầu có thể kích hoạt công thức bảng tính.
+Sync hiện là read-only: Jira giữ status, assignee và workflow; MySQL chỉ giữ cache issue cùng custom field đã cấu hình, report note, internal category, blocker/risk/highlight, lịch sử sync và audit log. CSV export có chặn ký tự mở đầu có thể kích hoạt công thức bảng tính.
 
 ## Bảo mật và giới hạn
 

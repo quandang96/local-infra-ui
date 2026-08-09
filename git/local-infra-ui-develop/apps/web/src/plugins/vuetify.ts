@@ -31,6 +31,21 @@ export const vuetify = createVuetify({
           info: '#38bdf8',
         },
       },
+      localInfraLight: {
+        dark: false,
+        colors: {
+          background: '#f6f8fc',
+          surface: '#ffffff',
+          'surface-bright': '#f1f5fb',
+          'surface-light': '#e8eef8',
+          primary: '#2563eb',
+          secondary: '#6d5ce7',
+          success: '#15803d',
+          warning: '#b45309',
+          error: '#dc2626',
+          info: '#0284c7',
+        },
+      },
     },
   },
   defaults: {

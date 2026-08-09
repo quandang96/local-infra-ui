@@ -46,6 +46,7 @@ services:
       JIRA_INTERNAL_URL: ${JIRA_INTERNAL_URL:-}
       JIRA_JQL: ${JIRA_JQL:-project = LOCAL ORDER BY updated DESC}
       JIRA_ALLOWED_PROJECTS: ${JIRA_ALLOWED_PROJECTS:-LOCAL}
+      JIRA_CUSTOM_FIELDS: ${JIRA_CUSTOM_FIELDS:-[]}
       JIRA_API_TOKEN: ${JIRA_API_TOKEN:-}
       JIRA_EMAIL: ${JIRA_EMAIL:-}
       JIRA_REQUEST_TIMEOUT_MS: ${JIRA_REQUEST_TIMEOUT_MS:-15000}
@@ -71,7 +72,8 @@ services:
       # NOT limit which Docker API calls are allowed - the mount is still
       # root-equivalent on the Docker host, so only expose Control Center via a
       # trusted network (Coder proxy/VPN), never publicly.
-      - ${DOCKER_SOCKET_PATH:-/run/user/1000/docker.sock}:/var/run/docker.sock:ro
+      # - ${DOCKER_SOCKET_PATH:-/run/user/1000/docker.sock}:/var/run/docker.sock:ro
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
       # Defaults to the root stack's directory so relative volume paths in
       # /home/coder/git/docker-compose.yml resolve correctly on the Docker host.
       - ${WORKSPACE_HOST_PATH:-/home/coder/git}:${WORKSPACE_HOST_PATH:-/home/coder/git}
