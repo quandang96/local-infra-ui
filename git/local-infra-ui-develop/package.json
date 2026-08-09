@@ -5,6 +5,11 @@
   "workspaces": [
     "apps/*"
   ],
+  "overrides": {
+    "monaco-editor": {
+      "dompurify": "3.4.13"
+    }
+  },
   "scripts": {
     "dev": "npm-run-all --parallel dev:api dev:web",
     "dev:api": "npm --workspace @local-infra/api run dev",

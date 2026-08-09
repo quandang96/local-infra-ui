@@ -29,6 +29,10 @@ const jiraCustomFieldsSchema = z
 
 export type JiraCustomField = z.infer<typeof jiraCustomFieldSchema>;
 
+const jiraAssigneeDisplayMapSchema = z
+  .record(z.string().trim().min(1).max(255), z.string().trim().min(1).max(255))
+  .refine((mapping) => Object.keys(mapping).length <= 200, 'JIRA_ASSIGNEE_DISPLAY_MAP tối đa 200 mapping');
+
 function parseJiraCustomFields(value: string, context: z.RefinementCtx) {
   try {
     return jiraCustomFieldsSchema.parse(JSON.parse(value || '[]'));
@@ -38,6 +42,18 @@ function parseJiraCustomFields(value: string, context: z.RefinementCtx) {
       message: `JIRA_CUSTOM_FIELDS phải là JSON array hợp lệ: ${cause instanceof Error ? cause.message : 'invalid value'}`,
     });
     return [];
+  }
+}
+
+function parseJiraAssigneeDisplayMap(value: string, context: z.RefinementCtx) {
+  try {
+    return jiraAssigneeDisplayMapSchema.parse(JSON.parse(value || '{}'));
+  } catch (cause) {
+    context.addIssue({
+      code: 'custom',
+      message: `JIRA_ASSIGNEE_DISPLAY_MAP phải là JSON object hợp lệ: ${cause instanceof Error ? cause.message : 'invalid value'}`,
+    });
+    return {};
   }
 }
 
@@ -105,9 +121,13 @@ const schema = z.object({
   // JSON array of { id, label, path? }; field ids are included in the Jira
   // search request and their selected value is kept in the local issue cache.
   JIRA_CUSTOM_FIELDS: z.string().default('[]').transform(parseJiraCustomFields),
+  // JSON object mapping an assignee name from Jira to its UI display name.
+  JIRA_ASSIGNEE_DISPLAY_MAP: z.string().default('{}').transform(parseJiraAssigneeDisplayMap),
   JIRA_API_TOKEN: z.string().default(''),
   JIRA_EMAIL: z.string().email().optional().or(z.literal('')),
   JIRA_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60_000).default(15_000),
+  // Notes stay unavailable until a password is explicitly configured.
+  NOTES_PASSWORD: z.string().default(''),
 });
 
 export type Config = z.infer<typeof schema>;

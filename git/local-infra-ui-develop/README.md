@@ -51,6 +51,17 @@ docker compose -f ../docker-compose.yml up -d
 docker compose --project-name local-infra-control-center -f docker-compose.control-center.yml up --build -d
 ```
 
+### Development không cần rebuild mỗi lần sửa code
+
+Compose chính chạy development mode. Chạy lần đầu (hoặc sau khi đổi dependency, lockfile hay Dockerfile):
+
+```bash
+docker compose --project-name local-infra-control-center \
+  -f docker-compose.control-center.yml up --build
+```
+
+Sau đó, giữ lệnh này đang chạy và mở `http://localhost:5173`. Vite tự cập nhật thay đổi Vue/CSS; khi chạy Docker Desktop/WSL, Vite dùng polling để nhận thay đổi từ bind mount. Nếu source nằm trên filesystem Linux native, đặt `VITE_USE_POLLING=false` trong `.env` để dùng native file events. API chạy `tsx watch` nên tự restart khi sửa TypeScript. Port `3001` chỉ là API và có thể trả bundle production cũ, không dùng port này để kiểm tra giao diện development. Những lần sau chỉ cần chạy lại cùng lệnh **không có** `--build`. Chỉ cần build lại khi đổi dependency, lockfile hoặc Dockerfile.
+
 > Mount Docker socket có quyền tương đương root trên Docker host. Chỉ expose Control Center qua Coder proxy, VPN hoặc mạng nội bộ tin cậy.
 
 ## Dùng với Docker Compose project khác
@@ -134,7 +145,10 @@ Các giá trị bên dưới có sẵn trong `.env.example`; thay đổi theo po
 | Keycloak      | `KEYCLOAK_INTERNAL_URL`, `KEYCLOAK_OPEN_URL`                                                                                                                            |
 | MailHog       | `MAILHOG_INTERNAL_URL`, `MAILHOG_OPEN_URL`                                                                                                                              |
 | BigQuery      | `BIGQUERY_API_ENDPOINT`, `BIGQUERY_PROJECT_ID`                                                                                                                          |
-| Jira          | `JIRA_TYPE`, `JIRA_BASE_URL`, `JIRA_INTERNAL_URL`, `JIRA_JQL`, `JIRA_ALLOWED_PROJECTS`, `JIRA_CUSTOM_FIELDS`, `JIRA_API_TOKEN`, `JIRA_EMAIL`, `JIRA_REQUEST_TIMEOUT_MS` |
+| Jira          | `JIRA_TYPE`, `JIRA_BASE_URL`, `JIRA_INTERNAL_URL`, `JIRA_JQL`, `JIRA_ALLOWED_PROJECTS`, `JIRA_CUSTOM_FIELDS`, `JIRA_ASSIGNEE_DISPLAY_MAP`, `JIRA_API_TOKEN`, `JIRA_EMAIL`, `JIRA_REQUEST_TIMEOUT_MS` |
+| Notes         | `NOTES_PASSWORD` (tối thiểu 8 ký tự; để trống thì Notes bị khóa)                                                                                                        |
+
+Notes riêng tư dùng mật khẩu từ môi trường để cấp phiên truy cập 12 giờ. Bật **Mở công khai** cho từng note để người khác xem note đó ngay trong tab Notes mà không cần mật khẩu; chế độ này chỉ xem, không tạo link chia sẻ. Nội dung rich text được làm sạch trước khi render để hạn chế XSS.
 
 `KAFKA_UI_OPEN_URL` và `REDASH_OPEN_URL` là URL mà browser người dùng có thể mở, thường là URL Coder proxy. Các biến `*_INTERNAL_URL` là URL API container dùng để health check trong Docker network.
 
@@ -161,11 +175,12 @@ JIRA_API_TOKEN=<atlassian-api-token>
 JIRA_JQL=project = LOCAL ORDER BY updated DESC
 JIRA_ALLOWED_PROJECTS=LOCAL
 JIRA_CUSTOM_FIELDS=[{"id":"customfield_10043","label":"Sprint","role":"sprint"},{"id":"customfield_10016","label":"Story points","path":"value"},{"id":"customfield_10042","label":"Team","path":"name"}]
+JIRA_ASSIGNEE_DISPLAY_MAP={"A":"ANY"}
 ```
 
 4. Restart API/Control Center. Trong **Jira Workspace → Cấu hình**, chọn Jira Cloud, nhập đúng Base URL/JQL/allowlist, lưu, bấm **Test kết nối trực tiếp**, rồi **Sync Jira**.
 
-`JIRA_INTERNAL_URL` có thể để trống khi backend truy cập được `JIRA_BASE_URL`. `JIRA_CUSTOM_FIELDS` là JSON array, mỗi phần tử có `id` (Jira field ID), `label` (tên hiển thị) và `path` tùy chọn để lấy giá trị bên trong cấu trúc trả về của Jira, ví dụ `value`, `name` hoặc `0.name`. Dùng thêm `role: "sprint"` để ánh xạ custom field vào cột Sprint, Detail và bộ lọc Sprint; nhãn `Sprint` hoặc `sprints` cũng được tự nhận diện. Có thể khai báo tối đa 30 field và cần restart Control Center, sau đó sync lại Jira. Token chỉ được gửi từ backend khi gọi Jira; frontend và MySQL không nhận token.
+`JIRA_INTERNAL_URL` có thể để trống khi backend truy cập được `JIRA_BASE_URL`. `JIRA_CUSTOM_FIELDS` là JSON array, mỗi phần tử có `id` (Jira field ID), `label` (tên hiển thị) và `path` tùy chọn để lấy giá trị bên trong cấu trúc trả về của Jira, ví dụ `value`, `name` hoặc `0.name`. Dùng thêm `role: "sprint"` để ánh xạ custom field vào cột Sprint, Detail và bộ lọc Sprint; nhãn `Sprint` hoặc `sprints` cũng được tự nhận diện. `JIRA_ASSIGNEE_DISPLAY_MAP` là JSON object map tên Jira sang tên chỉ dùng để hiển thị, ví dụ `{"A":"ANY"}`; tên không có trong map giữ nguyên. Có thể khai báo tối đa 30 custom field và cần restart Control Center sau khi đổi biến môi trường. Token chỉ được gửi từ backend khi gọi Jira; frontend và MySQL không nhận token.
 
 Để chuyển sang Jira khách hàng, đổi `JIRA_TYPE`, `JIRA_BASE_URL`, `JIRA_INTERNAL_URL` và `JIRA_API_TOKEN`; với Jira Cloud đặt thêm `JIRA_EMAIL`. Nếu database Control Center đã tồn tại, cập nhật Base URL, Team JQL và allowlist trong tab **Cấu hình**. Jira Data Center dùng PAT theo Bearer auth; Jira Cloud dùng email + API token theo Basic auth. Token không được nhận hoặc trả về qua API và không được lưu trong MySQL.
 

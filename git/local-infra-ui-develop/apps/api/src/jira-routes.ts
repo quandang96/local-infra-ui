@@ -383,7 +383,11 @@ export function registerJiraRoutes(
     const settings = await database.getJiraSettings();
     return {
       ...(await database.jiraDashboard(settings.staleDays)),
-      settings: { ...settings, hasToken: Boolean(config.JIRA_API_TOKEN) },
+      settings: {
+        ...settings,
+        hasToken: Boolean(config.JIRA_API_TOKEN),
+        assigneeDisplayMap: config.JIRA_ASSIGNEE_DISPLAY_MAP,
+      },
     };
   });
 
@@ -435,13 +439,19 @@ export function registerJiraRoutes(
     ...(await database.getJiraSettings()),
     hasToken: Boolean(config.JIRA_API_TOKEN),
     customFields: config.JIRA_CUSTOM_FIELDS,
+    assigneeDisplayMap: config.JIRA_ASSIGNEE_DISPLAY_MAP,
   }));
   app.patch('/api/jira/settings', async (request) => {
     const before = await database.getJiraSettings();
     const body = settingsBody.parse(request.body);
     const saved = await database.saveJiraSettings({ ...body, updatedAt: new Date().toISOString() });
     await database.addJiraAudit(actorFor(request), 'jira.settings.update', 'integration', 'jira', before, saved);
-    return { ...saved, hasToken: Boolean(config.JIRA_API_TOKEN), customFields: config.JIRA_CUSTOM_FIELDS };
+    return {
+      ...saved,
+      hasToken: Boolean(config.JIRA_API_TOKEN),
+      customFields: config.JIRA_CUSTOM_FIELDS,
+      assigneeDisplayMap: config.JIRA_ASSIGNEE_DISPLAY_MAP,
+    };
   });
 
   app.get('/api/jira/connection', async () => testJiraConnection(await database.getJiraSettings(), config));

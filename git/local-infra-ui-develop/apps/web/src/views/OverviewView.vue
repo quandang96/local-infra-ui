@@ -5,7 +5,18 @@ import { useInfraStore } from '../stores/infra';
 import PanelControls from '../components/PanelControls.vue';
 
 const infra = useInfraStore();
-const dedicatedRoutes = new Set(['mysql', 'gcloud', 'datastore', 'kafka', 'kafka-ui', 'redash', 'spanner']);
+const dedicatedRoutes = new Set([
+  'mysql',
+  'gcloud',
+  'datastore',
+  'kafka',
+  'kafka-ui',
+  'redash',
+  'spanner',
+  'bigquery',
+  'keycloak',
+  'mailhog',
+]);
 const serviceRoute = (id: string) => (dedicatedRoutes.has(id) ? `/${id}` : `/service/${id}`);
 const overviewTools = [
   {
@@ -15,6 +26,43 @@ const overviewTools = [
     image: 'Go / Node / Vue',
     ports: ['on demand'],
     status: 'tool',
+    icon: 'mdi-application-braces-outline',
+  },
+  {
+    id: 'tasks',
+    label: 'Task History',
+    container: 'background operations',
+    image: 'Task queue',
+    ports: ['workspace'],
+    status: 'tool',
+    icon: 'mdi-history',
+  },
+  {
+    id: 'notes',
+    label: 'Notes',
+    container: 'private workspace',
+    image: 'Rich text notes',
+    ports: ['workspace'],
+    status: 'tool',
+    icon: 'mdi-notebook-outline',
+  },
+  {
+    id: 'jira',
+    label: 'Jira Workspace',
+    container: 'project tracking',
+    image: 'Jira reports',
+    ports: ['workspace'],
+    status: 'tool',
+    icon: 'mdi-jira',
+  },
+  {
+    id: 'gcloud',
+    label: 'gcloud CLI',
+    container: 'Google Cloud tools',
+    image: 'Google Cloud SDK',
+    ports: ['on demand'],
+    status: 'tool',
+    icon: 'mdi-cloud-outline',
   },
   {
     id: 'docker',
@@ -23,6 +71,16 @@ const overviewTools = [
     image: 'Docker CLI',
     ports: ['workspace'],
     status: 'tool',
+    icon: 'mdi-docker',
+  },
+  {
+    id: 'system',
+    label: 'System',
+    container: 'workspace diagnostics',
+    image: 'Host & Docker status',
+    ports: ['workspace'],
+    status: 'tool',
+    icon: 'mdi-server-outline',
   },
 ];
 const fmtBytes = (value?: number) => (value == null ? '—' : `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`);
@@ -108,7 +166,7 @@ async function bulk(actionId: 'compose.startAll' | 'compose.stopAll' | 'compose.
           <span class="status" :class="serviceStatusClass(tool.status)">On demand</span>
         </div>
         <div class="card-meta">
-          <span><v-icon icon="mdi-tools" size="14" /> {{ tool.image }}</span>
+          <span><v-icon :icon="tool.icon" size="14" /> {{ tool.image }}</span>
           <span><v-icon icon="mdi-crosshairs-gps" size="14" /> {{ tool.ports.join(' / ') }}</span>
         </div>
       </RouterLink>

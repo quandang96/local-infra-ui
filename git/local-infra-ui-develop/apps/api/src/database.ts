@@ -77,6 +77,19 @@ export type JiraSettings = {
   updatedAt: string;
 };
 export type JiraSettingsDefaults = Omit<JiraSettings, 'updatedAt'>;
+export type Note = {
+  id: string;
+  title: string;
+  content: string;
+  tags: string[];
+  isFavorite: boolean;
+  isShared: boolean;
+  shareToken: string | null;
+  createdBy: string;
+  updatedBy: string;
+  createdAt: string;
+  updatedAt: string;
+};
 
 type DatabaseConfig = { host: string; port: number; user: string; password: string; database: string };
 type TaskRow = RowDataPacket & Record<string, unknown>;
@@ -191,6 +204,15 @@ export class AuditDatabase {
         synced_at VARCHAR(40) NOT NULL,
         KEY jira_comments_jira_key (jira_key)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `
+      CREATE TABLE IF NOT EXISTS notes (
+        id VARCHAR(80) PRIMARY KEY, title VARCHAR(240) NOT NULL, content LONGTEXT NOT NULL,
+        tags_json TEXT NOT NULL, is_favorite TINYINT(1) NOT NULL DEFAULT 0,
+        is_shared TINYINT(1) NOT NULL DEFAULT 0, share_token VARCHAR(80) UNIQUE,
+        created_by VARCHAR(255) NOT NULL, updated_by VARCHAR(255) NOT NULL,
+        created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL,
+        KEY notes_updated_at (updated_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
     ];
     for (const statement of statements) await this.pool.query(statement);
     // ALTER TABLE migrations for columns added after initial schema.
@@ -219,6 +241,21 @@ export class AuditDatabase {
       if (!rows[0] || rows[0].cnt === 0) {
         await this.pool.query(ddl);
       }
+    }
+    const noteColumnMigrations: Array<{ column: string; ddl: string }> = [
+      { column: 'tags_json', ddl: 'ALTER TABLE notes ADD COLUMN tags_json TEXT NOT NULL AFTER content' },
+      {
+        column: 'is_favorite',
+        ddl: 'ALTER TABLE notes ADD COLUMN is_favorite TINYINT(1) NOT NULL DEFAULT 0 AFTER tags_json',
+      },
+    ];
+    for (const { column, ddl } of noteColumnMigrations) {
+      const [rows] = await this.pool.execute<Array<RowDataPacket & { cnt: number }>>(
+        `SELECT COUNT(*) AS cnt FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'notes' AND COLUMN_NAME = ?`,
+        [column]
+      );
+      if (!rows[0] || rows[0].cnt === 0) await this.pool.query(ddl);
     }
     await this.initializeJiraWorkspace(jiraDefaults);
   }
@@ -440,6 +477,97 @@ export class AuditDatabase {
 
   async deleteManagedService(id: string) {
     const [result] = await this.pool.execute<mysql.ResultSetHeader>('DELETE FROM managed_services WHERE id = ?', [id]);
+    return result.affectedRows > 0;
+  }
+
+  async listNotes() {
+    const [rows] = await this.pool.query<Array<RowDataPacket & Omit<Note, 'tags'> & { tagsJson: string }>>(
+      `SELECT id, title, content, tags_json AS tagsJson, is_favorite AS isFavorite,
+       is_shared AS isShared, share_token AS shareToken,
+       created_by AS createdBy, updated_by AS updatedBy, created_at AS createdAt, updated_at AS updatedAt
+       FROM notes ORDER BY updated_at DESC`
+    );
+    return rows.map(({ tagsJson, ...note }) => ({
+      ...note,
+      tags: JSON.parse(tagsJson || '[]') as string[],
+      isFavorite: Boolean(note.isFavorite),
+      isShared: Boolean(note.isShared),
+    }));
+  }
+
+  async listPublicNotes() {
+    const [rows] = await this.pool.query<
+      Array<
+        RowDataPacket & {
+          id: string;
+          title: string;
+          content: string;
+          tagsJson: string;
+          isFavorite: number;
+          createdAt: string;
+          updatedAt: string;
+        }
+      >
+    >(
+      `SELECT id, title, content, tags_json AS tagsJson, is_favorite AS isFavorite,
+       created_at AS createdAt, updated_at AS updatedAt
+       FROM notes WHERE is_shared = 1 ORDER BY updated_at DESC`
+    );
+    return rows.map(({ tagsJson, ...note }) => ({
+      ...note,
+      tags: JSON.parse(tagsJson || '[]') as string[],
+      isFavorite: Boolean(note.isFavorite),
+      isShared: true,
+      shareToken: null,
+    }));
+  }
+
+  async getNote(id: string) {
+    const [rows] = await this.pool.execute<Array<RowDataPacket & Omit<Note, 'tags'> & { tagsJson: string }>>(
+      `SELECT id, title, content, tags_json AS tagsJson, is_favorite AS isFavorite,
+       is_shared AS isShared, share_token AS shareToken,
+       created_by AS createdBy, updated_by AS updatedBy, created_at AS createdAt, updated_at AS updatedAt
+       FROM notes WHERE id = ?`,
+      [id]
+    );
+    const row = rows[0];
+    if (!row) return undefined;
+    const { tagsJson, ...note } = row;
+    return {
+      ...note,
+      tags: JSON.parse(tagsJson || '[]') as string[],
+      isFavorite: Boolean(note.isFavorite),
+      isShared: Boolean(note.isShared),
+    };
+  }
+
+  async saveNote(note: Note) {
+    await this.pool.execute(
+      `INSERT INTO notes
+       (id, title, content, tags_json, is_favorite, is_shared, share_token, created_by, updated_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE title = VALUES(title), content = VALUES(content), tags_json = VALUES(tags_json),
+       is_favorite = VALUES(is_favorite), is_shared = VALUES(is_shared), share_token = VALUES(share_token),
+       updated_by = VALUES(updated_by), updated_at = VALUES(updated_at)`,
+      [
+        note.id,
+        note.title,
+        note.content,
+        JSON.stringify(note.tags),
+        note.isFavorite ? 1 : 0,
+        note.isShared ? 1 : 0,
+        note.shareToken,
+        note.createdBy,
+        note.updatedBy,
+        note.createdAt,
+        note.updatedAt,
+      ]
+    );
+    return note;
+  }
+
+  async deleteNote(id: string) {
+    const [result] = await this.pool.execute<mysql.ResultSetHeader>('DELETE FROM notes WHERE id = ?', [id]);
     return result.affectedRows > 0;
   }
 
