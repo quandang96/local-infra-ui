@@ -1,15 +1,17 @@
-FROM node:24-bookworm-slim AS build
+FROM node:24-bookworm-slim AS dependencies
 WORKDIR /workspace
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
 RUN npm ci
+
+FROM dependencies AS build
 COPY . .
 RUN npm run build
 
 FROM golang:1.25.3-bookworm AS go-toolchain
 
-FROM node:24-bookworm-slim AS runtime
+FROM node:24-bookworm-slim AS runtime-base
 WORKDIR /workspace
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg make && \
    install -m 0755 -d /etc/apt/keyrings && \
@@ -26,6 +28,8 @@ ENV GOCACHE=/home/coder/.cache/go-build
 ENV GOBIN=/home/coder/go/bin
 ENV PATH="/usr/local/go/bin:/home/coder/go/bin:${PATH}"
 RUN mkdir -p /home/coder/go/bin /home/coder/go/pkg/mod /home/coder/.cache/go-build
+
+FROM runtime-base AS runtime
 ENV NODE_ENV=production
 COPY --from=build /workspace/node_modules ./node_modules
 COPY --from=build /workspace/apps/api/dist ./apps/api/dist
@@ -34,3 +38,10 @@ COPY --from=build /workspace/apps/api/package.json ./apps/api/package.json
 COPY --from=build /workspace/package.json ./package.json
 EXPOSE 3001
 CMD ["node", "apps/api/dist/server.js"]
+
+FROM runtime-base AS development
+ENV NODE_ENV=development
+COPY --from=dependencies /workspace/node_modules ./node_modules
+COPY . .
+EXPOSE 3001 5173
+CMD ["npm", "run", "dev"]

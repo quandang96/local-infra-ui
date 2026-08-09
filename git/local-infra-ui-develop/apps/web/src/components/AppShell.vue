@@ -68,6 +68,7 @@ const navigation: Array<{ label: string; items: NavigationItem[] }> = [
       { to: '/keycloak', label: 'Keycloak', icon: 'mdi-shield-account-outline' },
       { to: '/mailhog', label: 'MailHog', icon: 'mdi-email-outline' },
       { to: '/jira', label: 'Jira Workspace', icon: 'mdi-jira' },
+      { to: '/notes', label: 'Notes', icon: 'mdi-notebook-outline' },
       { to: '/docker', label: 'Docker Tools', icon: 'mdi-docker' },
       { to: '/system', label: 'System', icon: 'mdi-server-outline' },
     ],
@@ -331,24 +332,27 @@ onMounted(() => {
   backdrop-filter: blur(16px);
 }
 .page-title {
+  display: block;
+  overflow: hidden;
   font-size: 20px;
   font-weight: 750;
   letter-spacing: -0.025em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .topbar :deep(.v-toolbar-title) {
   flex: 0 1 auto;
+  min-width: 0;
 }
 .topbar :deep(.v-toolbar__content) {
-  position: relative;
   display: flex;
-  justify-content: space-between;
+  gap: 8px;
+  overflow: hidden;
 }
 #topbar-page-tabs {
-  position: absolute;
-  left: 50%;
-  z-index: 1;
+  flex: 1 1 auto;
   min-width: 0;
-  transform: translateX(-50%);
+  overflow: hidden;
 }
 .topbar-actions,
 .service-actions,
@@ -361,7 +365,8 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 2px;
-  max-width: min(680px, 42vw);
+  width: 100%;
+  max-width: none;
   overflow-x: auto;
 }
 :global(.jira-topbar-tabs .v-btn) {
@@ -392,10 +397,10 @@ onMounted(() => {
   color: #fff;
 }
 .topbar-actions {
-  position: relative;
-  z-index: 2;
+  flex: 0 0 auto;
   min-width: 0;
   padding-right: 20px;
+  white-space: nowrap;
 }
 .connection-chip {
   font-weight: 700;
@@ -421,6 +426,15 @@ onMounted(() => {
   .service-actions,
   .connection-chip,
   #topbar-page-tabs {
+    display: none;
+  }
+}
+@media (max-width: 1120px) {
+  .topbar-actions,
+  :global(.jira-topbar-btns) {
+    gap: 4px;
+  }
+  .connection-chip {
     display: none;
   }
 }

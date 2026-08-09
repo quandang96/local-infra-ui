@@ -175,7 +175,15 @@ textarea {
 
 .v-field--focused {
   --v-field-border-opacity: 1;
-  box-shadow: 0 0 0 3px var(--focus-ring);
+  box-shadow: none !important;
+}
+
+.v-field--focused .v-field__outline {
+  color: var(--el-color-primary) !important;
+}
+
+.v-field--focused .v-field-label {
+  color: var(--el-color-primary) !important;
 }
 
 .v-field__input,
@@ -184,6 +192,33 @@ textarea {
   padding-top: 9px !important;
   padding-bottom: 7px !important;
   font-size: 12px !important;
+}
+
+.control-field-label {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.v-textarea .v-field__input {
+  min-height: auto !important;
+  align-items: flex-start;
+  padding-top: 12px !important;
+  padding-bottom: 12px !important;
+}
+
+.v-textarea textarea,
+.el-textarea__inner {
+  color: var(--text) !important;
+  line-height: 1.55 !important;
+  caret-color: var(--el-color-primary);
+}
+
+.v-textarea textarea::placeholder,
+.el-textarea__inner::placeholder {
+  color: var(--muted) !important;
+  opacity: 0.72;
 }
 
 .v-field__append-inner .v-icon,
@@ -634,6 +669,11 @@ textarea {
   box-shadow: 0 0 0 1px var(--line-strong) inset !important;
 }
 
+.el-textarea__inner {
+  padding: 10px 12px !important;
+  resize: vertical;
+}
+
 .el-select__wrapper,
 .el-input__wrapper {
   min-height: 40px !important;
@@ -650,9 +690,7 @@ textarea {
 .el-input__wrapper.is-focus,
 .el-select__wrapper.is-focused,
 .el-textarea__inner:focus {
-  box-shadow:
-    0 0 0 1px var(--el-color-primary) inset,
-    0 0 0 3px var(--focus-ring) !important;
+  box-shadow: 0 0 0 1px var(--el-color-primary) inset !important;
 }
 
 .el-popper.is-light,
@@ -755,9 +793,9 @@ textarea {
   background: #fff !important;
 }
 
-:root[data-theme='light'] .jira-workspace .wl-table th,
+:root[data-theme='light'] .jira-workspace .wl-grid-header > div,
 :root[data-theme='light'] .jira-workspace .total-cell,
-:root[data-theme='light'] .jira-workspace .total-col {
+:root[data-theme='light'] .jira-workspace .wl-grid-total {
   background: #f1f6ff !important;
   color: #2f5f9f !important;
 }
@@ -800,6 +838,49 @@ textarea {
 
 .el-dialog {
   border-radius: 18px !important;
+}
+
+.el-dialog__header {
+  margin-right: 0 !important;
+  padding: 22px 24px 14px !important;
+  border-bottom: 1px solid var(--line);
+}
+
+.el-dialog__body {
+  padding: 20px 24px !important;
+}
+
+.el-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 24px 20px !important;
+  border-top: 1px solid var(--line);
+}
+
+.el-dialog .el-form-item {
+  margin-bottom: 16px;
+}
+
+.v-overlay__content > .v-card > .v-card-title,
+.v-dialog > .v-card > .v-card-title {
+  padding: 22px 24px 10px;
+  color: var(--text);
+  font-size: 1.125rem;
+  font-weight: 700;
+  letter-spacing: -0.012em;
+  line-height: 1.35;
+}
+
+.v-overlay__content > .v-card > .v-card-text,
+.v-dialog > .v-card > .v-card-text {
+  padding: 18px 24px;
+}
+
+.v-overlay__content > .v-card > .v-card-actions,
+.v-dialog > .v-card > .v-card-actions {
+  gap: 8px;
+  padding: 12px 24px 20px;
 }
 
 .el-tabs__item {

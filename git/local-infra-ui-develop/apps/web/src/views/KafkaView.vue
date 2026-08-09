@@ -112,12 +112,14 @@ onMounted(load);
         <div class="panel-body">
           <v-select v-model="topic" :items="namedRows(topics).map((item) => text(item.name))" label="Topic" />
           <v-text-field v-model="key" class="mt-3" label="Message key" />
+          <label class="control-field-label mt-3" for="kafka-message-value">Message value</label>
           <v-textarea
+            id="kafka-message-value"
             v-model="value"
-            class="mt-3"
-            label="Message value"
+            class="app-textarea mt-1"
             placeholder='{"event":"created"}'
-            persistent-placeholder
+            aria-label="Message value"
+            hide-details
             :rows="8"
           />
           <div class="toolbar">

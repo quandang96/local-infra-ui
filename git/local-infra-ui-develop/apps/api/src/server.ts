@@ -10,6 +10,7 @@ import { config } from './config.js';
 import { AuditDatabase } from './database.js';
 import { Infrastructure } from './infra.js';
 import { registerJiraRoutes } from './jira-routes.js';
+import { registerNotesRoutes } from './notes-routes.js';
 import { ManagedServiceRunner } from './managed-services.js';
 import { TaskRunner } from './task-runner.js';
 
@@ -186,6 +187,7 @@ app.setErrorHandler((error: any, request, reply) => {
 const actorFor = (request: any) =>
   config.TRUST_CODER_PROXY ? String(request.headers[config.CODER_ACTOR_HEADER] ?? 'local-user') : 'local-user';
 registerJiraRoutes(app, database, config, actorFor);
+registerNotesRoutes(app, database, config, actorFor);
 const requireService = (id: string) => {
   const service = infra.getService(id);
   if (!service) throw Object.assign(new Error('Unknown service'), { statusCode: 404, code: 'SERVICE_NOT_FOUND' });

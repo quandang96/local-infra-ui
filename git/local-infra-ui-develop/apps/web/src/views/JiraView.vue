@@ -42,6 +42,7 @@ type Settings = {
   updatedAt?: string;
   hasToken?: boolean;
   customFields?: CustomFieldDefinition[];
+  assigneeDisplayMap?: Record<string, string>;
 };
 type ConnectionStatus = {
   connected: true;
@@ -138,6 +139,7 @@ const defaultSettings: Settings = {
   syncMode: 'manual',
   syncIntervalMinutes: 30,
   staleDays: 5,
+  assigneeDisplayMap: {},
 };
 const settings = reactive<Settings>({ ...defaultSettings });
 const allowedProjectsText = ref('');
@@ -148,7 +150,11 @@ const metadata = reactive({ reportNote: '', internalCategory: '', blockReason: '
 const unique = (key: keyof Issue) =>
   [...new Set(issues.value.map((item) => String(item[key] ?? '')).filter(Boolean))].sort();
 const statusOptions = computed(() => unique('status'));
-const assigneeOptions = computed(() => unique('assigneeName'));
+const assigneeOptions = computed(() =>
+  unique('assigneeName')
+    .map((value) => ({ value, label: assigneeLabel(value) }))
+    .sort((first, second) => first.label.localeCompare(second.label))
+);
 const priorityOptions = computed(() => unique('priority'));
 const sprintOptions = computed(() => unique('sprint'));
 const parentOptions = computed(() =>
@@ -171,8 +177,8 @@ function parseLabels(labels?: string): string[] {
 }
 const envTemplate = computed(() =>
   settings.jiraType === 'cloud'
-    ? `JIRA_TYPE=cloud\nJIRA_BASE_URL=${settings.baseUrl || 'https://company.atlassian.net'}\nJIRA_INTERNAL_URL=\nJIRA_API_TOKEN=<atlassian-api-token>\nJIRA_EMAIL=<jira-account-email>\nJIRA_CUSTOM_FIELDS=[]\nJIRA_REQUEST_TIMEOUT_MS=15000`
-    : `JIRA_TYPE=data_center\nJIRA_BASE_URL=${settings.baseUrl || 'https://jira.company.internal'}\nJIRA_INTERNAL_URL=\nJIRA_API_TOKEN=<jira-data-center-pat>\nJIRA_EMAIL=\nJIRA_CUSTOM_FIELDS=[]\nJIRA_REQUEST_TIMEOUT_MS=15000`
+    ? `JIRA_TYPE=cloud\nJIRA_BASE_URL=${settings.baseUrl || 'https://company.atlassian.net'}\nJIRA_INTERNAL_URL=\nJIRA_API_TOKEN=<atlassian-api-token>\nJIRA_EMAIL=<jira-account-email>\nJIRA_CUSTOM_FIELDS=[]\nJIRA_ASSIGNEE_DISPLAY_MAP={}\nJIRA_REQUEST_TIMEOUT_MS=15000`
+    : `JIRA_TYPE=data_center\nJIRA_BASE_URL=${settings.baseUrl || 'https://jira.company.internal'}\nJIRA_INTERNAL_URL=\nJIRA_API_TOKEN=<jira-data-center-pat>\nJIRA_EMAIL=\nJIRA_CUSTOM_FIELDS=[]\nJIRA_ASSIGNEE_DISPLAY_MAP={}\nJIRA_REQUEST_TIMEOUT_MS=15000`
 );
 const configurationChecks = computed(() => [
   { label: 'Backend secret', ready: Boolean(settings.hasToken) },
@@ -253,6 +259,10 @@ function statusTone(issue: Issue) {
   if (issue.statusCategory === 'indeterminate') return 'in-progress';
   if (issue.status.toLowerCase().includes('block')) return 'blocked';
   return 'todo';
+}
+function assigneeLabel(name?: string) {
+  if (!name) return 'Unassigned';
+  return settings.assigneeDisplayMap?.[name] || name;
 }
 function dueDateSortValue(value?: string | Date | null) {
   if (!value) return Number.MAX_SAFE_INTEGER;
@@ -530,6 +540,14 @@ function secondsToHours(seconds: number) {
   return (seconds / 3600).toFixed(1);
 }
 
+function worklogMatrixStyle(dayCount: number): Record<string, string> {
+  const days = Math.max(dayCount, 1);
+  return {
+    '--wl-day-count': String(days),
+    '--wl-table-min-width': `${130 + 64 + days * 72 + 4}px`,
+  };
+}
+
 function heatmapColor(seconds: number) {
   if (!seconds) return 'transparent';
   const hours = seconds / 3600;
@@ -748,7 +766,7 @@ onMounted(loadAll);
                 ><el-option v-for="item in statusOptions" :key="item" :value="item"
               /></el-select>
               <el-select v-model="filters.assignee" clearable placeholder="Assignee"
-                ><el-option v-for="item in assigneeOptions" :key="item" :value="item"
+                ><el-option v-for="item in assigneeOptions" :key="item.value" :label="item.label" :value="item.value"
               /></el-select>
               <el-select v-model="filters.priority" clearable placeholder="Priority"
                 ><el-option v-for="item in priorityOptions" :key="item" :value="item"
@@ -790,7 +808,9 @@ onMounted(loadAll);
               <el-table-column label="Sprint" width="130"
                 ><template #default="{ row }">{{ row.sprint || '—' }}</template></el-table-column
               >
-              <el-table-column prop="assigneeName" label="Assignee" width="130" />
+              <el-table-column label="Assignee" width="130">
+                <template #default="{ row }">{{ assigneeLabel(row.assigneeName) }}</template>
+              </el-table-column>
               <el-table-column label="Priority" width="110"
                 ><template #default="{ row }">{{ row.priority || '—' }}</template></el-table-column
               >
@@ -824,11 +844,11 @@ onMounted(loadAll);
             >
           </template>
           <div class="board-filters">
-            <el-input v-model="filters.q" clearable placeholder="Filter board..." /><el-select
+              <el-input v-model="filters.q" clearable placeholder="Filter board..." /><el-select
               v-model="filters.assignee"
               clearable
               placeholder="All members"
-              ><el-option v-for="item in assigneeOptions" :key="item" :value="item" /></el-select
+              ><el-option v-for="item in assigneeOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select
             ><el-select v-model="filters.sprint" clearable placeholder="All sprints"
               ><el-option v-for="item in sprintOptions" :key="item" :value="item"
             /></el-select>
@@ -961,7 +981,7 @@ onMounted(loadAll);
                       <i>{{ boardWarning(issue).icon }}</i>{{ boardWarning(issue).label }}
                     </span>
                   </div>
-                  <span class="board-assignee">{{ issue.assigneeName || 'Unassigned' }}</span>
+                  <span class="board-assignee">{{ assigneeLabel(issue.assigneeName) }}</span>
                 </div>
               </article>
             </section>
@@ -1083,15 +1103,18 @@ onMounted(loadAll);
             <!-- VIEW: Theo ngày (heatmap thành viên × ngày) -->
             <template v-if="worklogMode === 'by-day'">
               <div v-if="wlMemberReport && wlMemberReport.members.length" class="worklog-matrix-wrap">
-                <div class="worklog-matrix">
+                <div class="worklog-matrix" :style="worklogMatrixStyle(wlMemberReport.days.length)">
+                  <div class="wl-grid-header">
+                    <div class="wl-grid-corner">Thành viên</div>
+                    <div v-for="day in wlMemberReport.days" :key="day" class="wl-grid-day">{{ formatDay(day) }}</div>
+                    <div class="wl-grid-total">Tổng</div>
+                  </div>
                   <table class="wl-table">
-                    <thead>
-                      <tr>
-                        <th class="member-col">Thành viên</th>
-                        <th v-for="day in wlMemberReport.days" :key="day" class="day-col">{{ formatDay(day) }}</th>
-                        <th class="total-col">Tổng</th>
-                      </tr>
-                    </thead>
+                    <colgroup>
+                      <col class="wl-first-column" />
+                      <col v-for="day in wlMemberReport.days" :key="day" class="wl-day-column" />
+                      <col class="wl-total-column" />
+                    </colgroup>
                     <tbody>
                       <tr v-for="member in wlMemberReport.members" :key="member">
                         <td class="member-name">{{ member }}</td>
@@ -1125,15 +1148,18 @@ onMounted(loadAll);
             <!-- VIEW: Theo ticket (1 row = 1 ticket, cột ngày, không cột thành viên) -->
             <template v-else>
               <div v-if="wlByTicketReport && wlByTicketReport.tickets.length" class="worklog-matrix-wrap">
-                <div class="worklog-matrix">
+                <div class="worklog-matrix" :style="worklogMatrixStyle(wlByTicketReport.days.length)">
+                  <div class="wl-grid-header">
+                    <div class="wl-grid-corner">Ticket</div>
+                    <div v-for="day in wlByTicketReport.days" :key="day" class="wl-grid-day">{{ formatDay(day) }}</div>
+                    <div class="wl-grid-total">Tổng</div>
+                  </div>
                   <table class="wl-table wl-ticket-table">
-                    <thead>
-                      <tr>
-                        <th class="member-col">Ticket</th>
-                        <th v-for="day in wlByTicketReport.days" :key="day" class="day-col">{{ formatDay(day) }}</th>
-                        <th class="total-col">Tổng</th>
-                      </tr>
-                    </thead>
+                    <colgroup>
+                      <col class="wl-first-column" />
+                      <col v-for="day in wlByTicketReport.days" :key="day" class="wl-day-column" />
+                      <col class="wl-total-column" />
+                    </colgroup>
                     <tbody>
                       <tr v-for="ticket in wlTicketFilter ? [wlTicketFilter] : wlByTicketReport.tickets" :key="ticket">
                         <td class="ticket-key-cell">
@@ -1365,7 +1391,7 @@ onMounted(loadAll);
                 ></span
               >
               <span
-                >Assignee<b>{{ selectedIssue.assigneeName || 'Unassigned' }}</b></span
+                >Assignee<b>{{ assigneeLabel(selectedIssue.assigneeName) }}</b></span
               >
               <span
                 >Sprint<b>{{ selectedIssue.sprint || '—' }}</b></span
@@ -1411,10 +1437,10 @@ onMounted(loadAll);
             <el-form label-position="top">
               <el-form-item label="Internal category"><el-input v-model="metadata.internalCategory" /></el-form-item>
               <el-form-item label="Report note"
-                ><el-input v-model="metadata.reportNote" type="textarea" :rows="4"
+                ><el-input v-model="metadata.reportNote" type="textarea" :rows="4" placeholder="Nhập ghi chú nội bộ cho báo cáo..."
               /></el-form-item>
               <el-form-item label="Block reason"
-                ><el-input v-model="metadata.blockReason" type="textarea" :rows="3"
+                ><el-input v-model="metadata.blockReason" type="textarea" :rows="3" placeholder="Mô tả nguyên nhân đang bị chặn..."
               /></el-form-item>
               <div class="check-row">
                 <el-checkbox v-model="metadata.highlight">Highlight</el-checkbox>
@@ -2820,63 +2846,98 @@ onMounted(loadAll);
   font-weight: 700;
 }
 .worklog-matrix-wrap {
+  position: relative;
   max-height: min(68vh, 680px);
   overflow: auto;
   overscroll-behavior: contain;
+  isolation: isolate;
 }
 .worklog-matrix {
-  min-width: 100%;
+  width: 100%;
+  min-width: var(--wl-table-min-width);
   padding: 2px;
+  box-sizing: border-box;
+}
+.wl-grid-header {
+  display: grid;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  width: 100%;
+  grid-template-columns: 130px repeat(var(--wl-day-count), minmax(72px, 1fr)) 64px;
+}
+.wl-grid-header > div {
+  display: flex;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border-top: 1px solid var(--jira-border);
+  border-right: 1px solid var(--jira-border);
+  border-bottom: 1px solid var(--jira-border);
+  background: var(--jira-surface);
+  color: var(--jira-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.wl-grid-corner {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  justify-content: flex-start !important;
+  padding-inline: 8px;
+  border-left: 1px solid var(--jira-border);
+  box-shadow: 3px 0 0 var(--jira-border);
+}
+.wl-grid-total {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  background: var(--jira-surface-raised) !important;
+  color: var(--jira-ticket) !important;
+  box-shadow: -3px 0 0 var(--jira-border);
 }
 .wl-table {
   width: 100%;
-  border-collapse: collapse;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 11px;
 }
-.wl-table th {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  padding: 6px 8px;
-  background: var(--jira-surface);
-  color: var(--jira-text-muted);
-  font-weight: 700;
-  text-align: center;
-  white-space: nowrap;
-  border: 1px solid var(--jira-border);
+.wl-first-column {
+  width: 130px;
 }
-.member-col {
-  text-align: left !important;
-  min-width: 130px;
-  position: sticky;
-  left: 0;
-  top: 0;
-  z-index: 3;
+.wl-total-column {
+  width: 64px;
 }
-.total-col {
-  background: var(--jira-surface-raised) !important;
-  color: var(--jira-ticket) !important;
-  min-width: 64px;
-}
-.day-col {
-  min-width: 52px;
+.wl-table tr > :first-child {
+  border-left: 1px solid var(--jira-border);
 }
 .member-name {
   padding: 6px 10px;
+  box-sizing: border-box;
   background: var(--jira-surface);
   color: var(--jira-text);
   font-weight: 700;
   white-space: nowrap;
-  border: 1px solid var(--jira-border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border: 0;
+  border-right: 1px solid var(--jira-border);
+  border-bottom: 1px solid var(--jira-border);
   position: sticky;
   left: 0;
-  z-index: 2;
+  z-index: 3;
+  box-shadow: 3px 0 0 var(--jira-border);
 }
 .wl-cell {
-  width: 52px;
   height: 34px;
+  box-sizing: border-box;
   text-align: center;
-  border: 1px solid var(--jira-grid-border);
+  border: 0;
+  border-right: 1px solid var(--jira-grid-border);
+  border-bottom: 1px solid var(--jira-grid-border);
   cursor: default;
   color: #fff;
   text-shadow: 0 1px 2px rgb(0 0 0 / 36%);
@@ -2886,17 +2947,24 @@ onMounted(loadAll);
 .wl-cell:hover {
   outline: 2px solid #4c9eff;
   outline-offset: -2px;
-  z-index: 2;
+  z-index: 1;
   position: relative;
 }
 .total-cell {
+  position: sticky;
+  right: 0;
+  z-index: 3;
   padding: 6px 10px;
+  box-sizing: border-box;
   background: var(--jira-surface-raised);
   color: var(--jira-ticket);
   font-weight: 700;
   text-align: center;
-  border: 1px solid var(--jira-border);
+  border: 0;
+  border-right: 1px solid var(--jira-border);
+  border-bottom: 1px solid var(--jira-border);
   white-space: nowrap;
+  box-shadow: -3px 0 0 var(--jira-border);
 }
 .worklog-placeholder {
   padding: 28px;
@@ -2996,13 +3064,22 @@ onMounted(loadAll);
 /* Ticket-based worklog table */
 .wl-ticket-table .ticket-key-cell {
   padding: 8px 10px;
+  box-sizing: border-box;
   background: var(--jira-surface);
   color: var(--jira-ticket);
   font-weight: 700;
-  border: 1px solid var(--jira-border);
+  border: 0;
+  border-right: 1px solid var(--jira-border);
+  border-bottom: 1px solid var(--jira-border);
   vertical-align: middle;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   text-align: left;
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  box-shadow: 3px 0 0 var(--jira-border);
 }
 .wl-ticket-table .ticket-key-cell .jira-ticket-link {
   display: block;
