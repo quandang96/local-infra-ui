@@ -1,6 +1,46 @@
 import { resolve } from 'node:path';
 import { z } from 'zod';
 
+const jiraCustomFieldSchema = z.object({
+  id: z.string().trim().min(1).max(120),
+  label: z.string().trim().min(1).max(120),
+  // Map this custom field to the built-in Sprint column, filter, and detail.
+  role: z.enum(['sprint']).optional(),
+  // Optional dot path for the value inside Jira's field payload, such as
+  // "value", "name", or "0.name". Leave blank for the field value itself.
+  path: z
+    .string()
+    .trim()
+    .regex(/^$|^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/)
+    .default(''),
+});
+
+const jiraCustomFieldsSchema = z
+  .array(jiraCustomFieldSchema)
+  .max(30)
+  .superRefine((fields, context) => {
+    const ids = new Set<string>();
+    for (const [index, field] of fields.entries()) {
+      if (ids.has(field.id))
+        context.addIssue({ code: 'custom', message: `JIRA_CUSTOM_FIELDS trùng id: ${field.id}`, path: [index, 'id'] });
+      ids.add(field.id);
+    }
+  });
+
+export type JiraCustomField = z.infer<typeof jiraCustomFieldSchema>;
+
+function parseJiraCustomFields(value: string, context: z.RefinementCtx) {
+  try {
+    return jiraCustomFieldsSchema.parse(JSON.parse(value || '[]'));
+  } catch (cause) {
+    context.addIssue({
+      code: 'custom',
+      message: `JIRA_CUSTOM_FIELDS phải là JSON array hợp lệ: ${cause instanceof Error ? cause.message : 'invalid value'}`,
+    });
+    return [];
+  }
+}
+
 const schema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   HOST: z.string().default('127.0.0.1'),
@@ -62,6 +102,9 @@ const schema = z.object({
         .min(1)
         .max(30)
     ),
+  // JSON array of { id, label, path? }; field ids are included in the Jira
+  // search request and their selected value is kept in the local issue cache.
+  JIRA_CUSTOM_FIELDS: z.string().default('[]').transform(parseJiraCustomFields),
   JIRA_API_TOKEN: z.string().default(''),
   JIRA_EMAIL: z.string().email().optional().or(z.literal('')),
   JIRA_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60_000).default(15_000),

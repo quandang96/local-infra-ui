@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ElMessage } from '../ui';
-import { post } from '../api';
+import { post, serviceStatusClass, serviceStatusLabel } from '../api';
 import { useInfraStore } from '../stores/infra';
 import PanelControls from '../components/PanelControls.vue';
 
@@ -90,8 +90,8 @@ async function bulk(actionId: 'compose.startAll' | 'compose.stopAll' | 'compose.
             <b>{{ service.label }}</b
             ><small>{{ service.container ?? 'one-off tool' }}</small>
           </div>
-          <span class="status" :class="service.status">{{
-            service.runtimeMode === 'one_off' ? 'on demand' : service.status
+          <span class="status" :class="serviceStatusClass(service.status)">{{
+            service.runtimeMode === 'one_off' ? 'On demand' : serviceStatusLabel(service.status)
           }}</span>
         </div>
         <div class="card-meta">
@@ -105,7 +105,7 @@ async function bulk(actionId: 'compose.startAll' | 'compose.stopAll' | 'compose.
             <b>{{ tool.label }}</b
             ><small>{{ tool.container }}</small>
           </div>
-          <span class="status" :class="tool.status">on demand</span>
+          <span class="status" :class="serviceStatusClass(tool.status)">On demand</span>
         </div>
         <div class="card-meta">
           <span><v-icon icon="mdi-tools" size="14" /> {{ tool.image }}</span>
@@ -121,7 +121,7 @@ async function bulk(actionId: 'compose.startAll' | 'compose.stopAll' | 'compose.
           <PanelControls />
         </div>
       </header>
-      <el-table :data="infra.tasks.slice(0, 8)" stripe
+      <el-table :data="infra.tasks.slice(0, 8)" stripe max-height="360"
         ><el-table-column prop="service_id" label="Service" /><el-table-column
           prop="action_id"
           label="Action"

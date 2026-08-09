@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
-import { useDisplay } from 'vuetify';
+import { useDisplay, useTheme } from 'vuetify';
 import { useRoute } from 'vue-router';
-import { post, type Service } from '../api';
+import { post, serviceStatusClass, serviceStatusLabel, type Service } from '../api';
 import { useInfraStore } from '../stores/infra';
 import { acceptDialog, cancelDialog, dialogState, ElMessage, messageState } from '../ui';
 
@@ -11,8 +11,10 @@ type NavigationItem = { to: string; label: string; icon: string };
 const route = useRoute();
 const infra = useInfraStore();
 const { mobile } = useDisplay();
+const theme = useTheme();
 const drawerOpen = ref(true);
 const menuCollapsed = ref(false);
+const colorMode = ref<'dark' | 'light'>('dark');
 const title = computed(() => String(route.meta.title ?? 'Local Infra'));
 const serviceIdForRoute = computed(() =>
   route.name === 'service'
@@ -24,9 +26,17 @@ const serviceIdForRoute = computed(() =>
 const activeService = computed(
   () => infra.services.find((service) => service.id === serviceIdForRoute.value) as Service | undefined
 );
-const serviceStatus = computed(() =>
-  activeService.value?.runtimeMode === 'one_off' ? 'on demand' : activeService.value?.status
+const serviceStatus = computed(() => activeService.value?.status);
+const serviceStatusText = computed(() =>
+  activeService.value?.runtimeMode === 'one_off' ? 'On demand' : serviceStatusLabel(serviceStatus.value)
 );
+const serviceStatusColor = computed(() => {
+  if (activeService.value?.runtimeMode === 'one_off') return 'info';
+  const status = serviceStatusClass(serviceStatus.value);
+  if (status === 'healthy' || status === 'running') return 'success';
+  if (status === 'starting' || status === 'not_created' || status === 'tool') return 'warning';
+  return 'error';
+});
 const menuToggleLabel = computed(() =>
   mobile.value ? 'Close navigation' : menuCollapsed.value ? 'Expand navigation' : 'Collapse navigation'
 );
@@ -69,6 +79,18 @@ function toggleMenu() {
   else menuCollapsed.value = !menuCollapsed.value;
 }
 
+function setColorMode(mode: 'dark' | 'light') {
+  colorMode.value = mode;
+  document.documentElement.dataset.theme = mode;
+  document.documentElement.classList.toggle('dark', mode === 'dark');
+  theme.global.name.value = mode === 'dark' ? 'localInfraDark' : 'localInfraLight';
+  window.localStorage.setItem('local-infra-color-mode', mode);
+}
+
+function toggleColorMode() {
+  setColorMode(colorMode.value === 'dark' ? 'light' : 'dark');
+}
+
 async function lifecycle(action: 'start' | 'stop' | 'restart') {
   if (!activeService.value || activeService.value.runtimeMode !== 'daemon') return;
   try {
@@ -93,7 +115,11 @@ watch(
     if (mobile.value) drawerOpen.value = false;
   }
 );
-onMounted(infra.refresh);
+onMounted(() => {
+  const savedMode = window.localStorage.getItem('local-infra-color-mode');
+  setColorMode(savedMode === 'light' ? 'light' : 'dark');
+  infra.refresh();
+});
 </script>
 
 <template>
@@ -150,15 +176,16 @@ onMounted(infra.refresh);
       <v-app-bar-title>
         <span class="page-title">{{ title }}</span>
       </v-app-bar-title>
+      <div id="topbar-page-tabs"></div>
       <div class="topbar-actions">
         <v-chip
           v-if="activeService"
           size="small"
           variant="tonal"
-          :color="serviceStatus === 'running' || serviceStatus === 'healthy' ? 'success' : 'warning'"
+          :color="serviceStatusColor"
           prepend-icon="mdi-circle-small"
         >
-          {{ serviceStatus }}
+          {{ serviceStatusText }}
         </v-chip>
         <div v-if="activeService?.runtimeMode === 'daemon'" class="service-actions">
           <v-btn size="small" color="success" icon="mdi-play" title="Start" @click="lifecycle('start')" />
@@ -166,6 +193,14 @@ onMounted(infra.refresh);
           <v-btn size="small" color="error" icon="mdi-stop" title="Stop" @click="lifecycle('stop')" />
           <v-btn size="small" icon="mdi-refresh" title="Refresh" @click="infra.refresh" />
         </div>
+        <v-btn
+          class="theme-toggle"
+          size="small"
+          :icon="colorMode === 'dark' ? 'mdi-weather-sunny' : 'mdi-weather-night'"
+          :title="colorMode === 'dark' ? 'Chuyển sang giao diện sáng' : 'Chuyển sang giao diện tối'"
+          :aria-label="colorMode === 'dark' ? 'Chuyển sang giao diện sáng' : 'Chuyển sang giao diện tối'"
+          @click="toggleColorMode"
+        />
         <div id="topbar-page-actions"></div>
         <v-chip
           class="connection-chip"
@@ -222,7 +257,7 @@ onMounted(infra.refresh);
 <style scoped>
 .sidebar {
   border-right-color: var(--line) !important;
-  background: #091424 !important;
+  background: var(--side) !important;
 }
 .brand {
   display: flex;
@@ -265,7 +300,7 @@ onMounted(infra.refresh);
 .navigation :deep(.v-list-subheader) {
   min-height: 34px;
   padding-inline: 12px;
-  color: #70829b;
+  color: var(--nav-muted);
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.11em;
@@ -274,11 +309,11 @@ onMounted(infra.refresh);
 .navigation :deep(.v-list-item) {
   min-height: 42px;
   margin-bottom: 3px;
-  color: #aebdd0;
+  color: var(--nav-text);
 }
 .navigation :deep(.v-list-item--active) {
-  background: linear-gradient(90deg, rgb(74 126 218 / 24%), rgb(83 96 180 / 11%));
-  color: #fff;
+  background: var(--nav-active-bg);
+  color: var(--nav-active-text);
 }
 .drawer-footer {
   display: flex;
@@ -292,13 +327,28 @@ onMounted(infra.refresh);
 }
 .topbar {
   border-bottom: 1px solid var(--line) !important;
-  background: rgb(7 16 29 / 88%) !important;
+  background: var(--topbar) !important;
   backdrop-filter: blur(16px);
 }
 .page-title {
   font-size: 20px;
   font-weight: 750;
   letter-spacing: -0.025em;
+}
+.topbar :deep(.v-toolbar-title) {
+  flex: 0 1 auto;
+}
+.topbar :deep(.v-toolbar__content) {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+}
+#topbar-page-tabs {
+  position: absolute;
+  left: 50%;
+  z-index: 1;
+  min-width: 0;
+  transform: translateX(-50%);
 }
 .topbar-actions,
 .service-actions,
@@ -307,7 +357,43 @@ onMounted(infra.refresh);
   align-items: center;
   gap: 7px;
 }
+:global(.jira-topbar-tabs) {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: min(680px, 42vw);
+  overflow-x: auto;
+}
+:global(.jira-topbar-tabs .v-btn) {
+  min-width: auto;
+  min-height: 36px !important;
+  padding-inline: 10px !important;
+  color: var(--muted);
+  font-size: 12px !important;
+  white-space: nowrap;
+}
+:global(.jira-topbar-tab-icon) {
+  display: inline-grid;
+  width: 21px;
+  height: 21px;
+  margin-right: 5px;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--soft);
+  font-size: 12px;
+  font-weight: 800;
+}
+:global(.jira-topbar-tabs .v-btn.is-active) {
+  background: var(--control-hover);
+  color: var(--el-color-primary);
+}
+:global(.jira-topbar-tabs .v-btn.is-active .jira-topbar-tab-icon) {
+  background: var(--el-color-primary);
+  color: #fff;
+}
 .topbar-actions {
+  position: relative;
+  z-index: 2;
   min-width: 0;
   padding-right: 20px;
 }
@@ -333,7 +419,8 @@ onMounted(infra.refresh);
     padding-right: 12px;
   }
   .service-actions,
-  .connection-chip {
+  .connection-chip,
+  #topbar-page-tabs {
     display: none;
   }
 }

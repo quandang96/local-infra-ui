@@ -39,7 +39,12 @@ async function toggleFullscreen(event: MouseEvent) {
   padding: 2px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: rgb(7 16 29 / 52%);
+  background: var(--input-bg);
+}
+.panel-controls :deep(.v-btn:hover),
+.panel-controls :deep(.v-btn:focus-visible) {
+  background: var(--control-hover);
+  color: var(--el-color-primary);
 }
 :global(.panel.panel-collapsed > :not(.panel-header)) {
   display: none !important;
@@ -48,25 +53,8 @@ async function toggleFullscreen(event: MouseEvent) {
   height: auto !important;
   min-height: 0 !important;
 }
-:global(.workspace:has(> .panel:first-child.panel-collapsed)) {
-  grid-template-columns: 52px minmax(0, 1fr);
-}
-:global(.workspace:has(> .panel:last-child.panel-collapsed)) {
-  grid-template-columns: minmax(0, 1fr) 52px;
-}
-:global(.workspace > .panel.panel-collapsed .panel-header) {
-  justify-content: center;
-  min-height: 46px;
-  padding: 8px;
-}
-:global(.workspace > .panel.panel-collapsed .panel-header > :not(.panel-controls):not(:has(.panel-controls))) {
-  display: none !important;
-}
-:global(.workspace > .panel.panel-collapsed .panel-header > :has(.panel-controls)) {
-  display: contents;
-}
-:global(.workspace > .panel.panel-collapsed .panel-header > :has(.panel-controls) > :not(.panel-controls)) {
-  display: none !important;
+:global(.panel.panel-collapsed .panel-header) {
+  border-bottom: 0;
 }
 :global(.panel:fullscreen) {
   width: 100%;

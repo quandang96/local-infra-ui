@@ -11,20 +11,6 @@ const metadataBody = z.object({
   highlight: z.boolean().default(false),
   risk: z.boolean().default(false),
 });
-const resourceBody = z.object({
-  name: z.string().trim().min(1).max(200),
-  url: z.string().url().max(2048),
-  type: z.enum(['Confluence', 'Drive', 'Document', 'Diagram', 'Runbook', 'Other']),
-  jiraKey: z
-    .string()
-    .trim()
-    .regex(/^[A-Z][A-Z0-9_]*-\d+$/)
-    .optional()
-    .or(z.literal('')),
-  owner: z.string().trim().min(1).max(255),
-  visibility: z.enum(['Team', 'Restricted', 'Private']),
-  description: z.string().max(5_000).default(''),
-});
 const settingsBody = z.object({
   jiraType: z.enum(['cloud', 'data_center']),
   baseUrl: z
@@ -51,7 +37,14 @@ function plainText(value: unknown): string | null {
   return (own || children || null) as string | null;
 }
 
-function sprintName(fields: Record<string, any>) {
+function sprintName(fields: Record<string, any>, config: Config) {
+  const configuredSprint = config.JIRA_CUSTOM_FIELDS.find(
+    (field) => field.role === 'sprint' || /^sprints?$/i.test(field.label.trim())
+  );
+  if (configuredSprint) {
+    const sprint = displayCustomFieldValue(valueAtPath(fields[configuredSprint.id], configuredSprint.path));
+    if (sprint) return sprint;
+  }
   if (typeof fields.sprint?.name === 'string') return fields.sprint.name;
   for (const value of Object.values(fields)) {
     if (
@@ -66,11 +59,44 @@ function sprintName(fields: Record<string, any>) {
   return null;
 }
 
-function mapIssue(issue: any, syncedAt: string): JiraIssueInput {
+function valueAtPath(value: unknown, path: string): unknown {
+  if (!path) return value;
+  return path.split('.').reduce<unknown>((current, key) => {
+    if (Array.isArray(current) && /^\d+$/.test(key)) return current[Number(key)];
+    if (current && typeof current === 'object') return (current as Record<string, unknown>)[key];
+    return undefined;
+  }, value);
+}
+
+function displayCustomFieldValue(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) {
+    const values = value.map(displayCustomFieldValue).filter((item): item is string => Boolean(item));
+    return values.length ? values.join(', ') : null;
+  }
+  const node = value as Record<string, unknown>;
+  for (const key of ['displayName', 'name', 'value', 'key']) {
+    if (typeof node[key] === 'string' || typeof node[key] === 'number') return String(node[key]);
+  }
+  return plainText(node) ?? JSON.stringify(node);
+}
+
+function configuredCustomFields(fields: Record<string, any>, config: Config) {
+  const values: Record<string, string> = {};
+  console.debug('Configured Jira custom fields:', config.JIRA_CUSTOM_FIELDS);
+  console.debug('fields:', fields);
+  for (const field of config.JIRA_CUSTOM_FIELDS) {
+    const value = displayCustomFieldValue(valueAtPath(fields[field.id], field.path));
+    console.debug(`Custom field ${field.id} (${field.label}) value:`, value);
+    if (value !== null) values[field.id] = value;
+  }
+  return Object.keys(values).length ? JSON.stringify(values) : null;
+}
+
+function mapIssue(issue: any, syncedAt: string, config: Config): JiraIssueInput {
   const fields = issue.fields ?? {};
-  const labels = Array.isArray(fields.labels) && fields.labels.length
-    ? JSON.stringify(fields.labels)
-    : null;
+  const labels = Array.isArray(fields.labels) && fields.labels.length ? JSON.stringify(fields.labels) : null;
   const parent = fields.parent ?? null;
   const mapped = {
     jiraId: String(issue.id ?? issue.key),
@@ -81,14 +107,18 @@ function mapIssue(issue: any, syncedAt: string): JiraIssueInput {
     issueType: fields.issuetype?.name ? String(fields.issuetype.name) : null,
     status: String(fields.status?.name ?? 'Unknown'),
     statusCategory: String(fields.status?.statusCategory?.key ?? 'new').toLowerCase(),
+    statusColor: fields.status?.statusCategory?.colorName
+      ? String(fields.status.statusCategory.colorName).toLowerCase()
+      : null,
     assigneeName: fields.assignee?.displayName ? String(fields.assignee.displayName) : null,
     priority: fields.priority?.name ? String(fields.priority.name) : null,
-    sprint: sprintName(fields),
+    sprint: sprintName(fields, config),
     dueDate: fields.duedate ? String(fields.duedate) : null,
     parentKey: parent?.key ? String(parent.key) : null,
     parentSummary: parent?.fields?.summary ? String(parent.fields.summary) : null,
     labels,
     startDate: fields.startDate ?? fields.customfield_10015 ?? null,
+    customFields: configuredCustomFields(fields, config),
     jiraUpdatedAt: String(fields.updated ?? syncedAt),
     syncedAt,
   };
@@ -158,6 +188,7 @@ async function fetchJiraIssues(settings: JiraSettings, config: Config) {
     'parent',
     'labels',
     'comment',
+    ...config.JIRA_CUSTOM_FIELDS.map((field) => field.id),
   ];
   // Sprint and start_date are Jira Software custom fields whose IDs differ per site. Discover them.
   try {
@@ -170,8 +201,8 @@ async function fetchJiraIssues(settings: JiraSettings, config: Config) {
       if (Array.isArray(fieldCatalog)) {
         const sprintField = fieldCatalog.find((field) => String(field.name).toLowerCase() === 'sprint');
         if (sprintField?.id) fields.push(String(sprintField.id));
-        const startField = fieldCatalog.find(
-          (field) => ['start date', 'story start date', 'start_date'].includes(String(field.name).toLowerCase())
+        const startField = fieldCatalog.find((field) =>
+          ['start date', 'story start date', 'start_date'].includes(String(field.name).toLowerCase())
         );
         if (startField?.id && startField.id !== 'startDate') fields.push(String(startField.id));
       }
@@ -313,7 +344,7 @@ export function registerJiraRoutes(
       const sourceIssues = await fetchJiraIssues(settings, config);
       const syncedAt = new Date().toISOString();
       const result = await database.upsertJiraIssues(
-        sourceIssues.map((issue) => mapIssue(issue, syncedAt)),
+        sourceIssues.map((issue) => mapIssue(issue, syncedAt, config)),
         settings.allowedProjects
       );
       // Sync comments (from embedded field in search results)
@@ -324,8 +355,19 @@ export function registerJiraRoutes(
       const worklogs = await fetchJiraWorklogs(issueKeys, settings, config, syncedAt);
       await database.upsertJiraWorklogs(worklogs);
       await database.finishJiraSyncRun(id, { status: 'succeeded', ...result });
-      await database.addJiraAudit(actor, 'jira.sync', 'sync_run', id, null, { ...result, worklogs: worklogs.length, comments: comments.length });
-      return { id, ...result, total: sourceIssues.length, worklogs: worklogs.length, comments: comments.length, syncedAt };
+      await database.addJiraAudit(actor, 'jira.sync', 'sync_run', id, null, {
+        ...result,
+        worklogs: worklogs.length,
+        comments: comments.length,
+      });
+      return {
+        id,
+        ...result,
+        total: sourceIssues.length,
+        worklogs: worklogs.length,
+        comments: comments.length,
+        syncedAt,
+      };
     } catch (cause: any) {
       if (runRecorded) {
         await database.finishJiraSyncRun(id, { status: 'failed', failed: 1, error: cause.message });
@@ -389,48 +431,17 @@ export function registerJiraRoutes(
     return saved;
   });
 
-  app.get('/api/jira/resources', async () => ({ rows: await database.listJiraResources() }));
-  app.post('/api/jira/resources', async (request) => {
-    const body = resourceBody.parse(request.body);
-    const actor = actorFor(request);
-    const now = new Date().toISOString();
-    const resource = await database.createJiraResource({
-      id: `resource-${randomUUID()}`,
-      ...body,
-      createdBy: actor,
-      createdAt: now,
-      updatedAt: now,
-    });
-    await database.addJiraAudit(actor, 'jira.resource.create', 'resource', String(resource.id), null, resource);
-    return resource;
-  });
-  app.patch('/api/jira/resources/:resourceId', async (request) => {
-    const { resourceId } = z.object({ resourceId: z.string().min(1).max(80) }).parse(request.params);
-    const body = resourceBody.parse(request.body);
-    const saved = await database.updateJiraResource(resourceId, { ...body, updatedAt: new Date().toISOString() });
-    if (!saved)
-      throw Object.assign(new Error('Không tìm thấy resource'), { statusCode: 404, code: 'RESOURCE_NOT_FOUND' });
-    await database.addJiraAudit(actorFor(request), 'jira.resource.update', 'resource', resourceId, null, body);
-    return { updated: true };
-  });
-  app.delete('/api/jira/resources/:resourceId', async (request) => {
-    const { resourceId } = z.object({ resourceId: z.string().min(1).max(80) }).parse(request.params);
-    if (!(await database.deleteJiraResource(resourceId)))
-      throw Object.assign(new Error('Không tìm thấy resource'), { statusCode: 404, code: 'RESOURCE_NOT_FOUND' });
-    await database.addJiraAudit(actorFor(request), 'jira.resource.delete', 'resource', resourceId, null, null);
-    return { deleted: true };
-  });
-
   app.get('/api/jira/settings', async () => ({
     ...(await database.getJiraSettings()),
     hasToken: Boolean(config.JIRA_API_TOKEN),
+    customFields: config.JIRA_CUSTOM_FIELDS,
   }));
   app.patch('/api/jira/settings', async (request) => {
     const before = await database.getJiraSettings();
     const body = settingsBody.parse(request.body);
     const saved = await database.saveJiraSettings({ ...body, updatedAt: new Date().toISOString() });
     await database.addJiraAudit(actorFor(request), 'jira.settings.update', 'integration', 'jira', before, saved);
-    return { ...saved, hasToken: Boolean(config.JIRA_API_TOKEN) };
+    return { ...saved, hasToken: Boolean(config.JIRA_API_TOKEN), customFields: config.JIRA_CUSTOM_FIELDS };
   });
 
   app.get('/api/jira/connection', async () => testJiraConnection(await database.getJiraSettings(), config));
@@ -455,8 +466,14 @@ export function registerJiraRoutes(
   app.get('/api/jira/worklogs/report/by-ticket', async (request) => {
     const query = z
       .object({
-        dateFrom: z.string().max(40).default(() => new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10)),
-        dateTo: z.string().max(40).default(() => new Date().toISOString().slice(0, 10)),
+        dateFrom: z
+          .string()
+          .max(40)
+          .default(() => new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10)),
+        dateTo: z
+          .string()
+          .max(40)
+          .default(() => new Date().toISOString().slice(0, 10)),
         authorName: z.string().max(255).optional(),
       })
       .parse(request.query);
@@ -484,11 +501,18 @@ export function registerJiraRoutes(
   app.get('/api/jira/worklogs/report', async (request) => {
     const query = z
       .object({
-        dateFrom: z.string().max(40).default(() => new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10)),
-        dateTo: z.string().max(40).default(() => new Date().toISOString().slice(0, 10)),
+        dateFrom: z
+          .string()
+          .max(40)
+          .default(() => new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10)),
+        dateTo: z
+          .string()
+          .max(40)
+          .default(() => new Date().toISOString().slice(0, 10)),
+        authorName: z.string().max(255).optional(),
       })
       .parse(request.query);
-    const rows = await database.worklogReportByMemberByDay(query.dateFrom, query.dateTo);
+    const rows = await database.worklogReportByMemberByDay(query.dateFrom, query.dateTo, query.authorName);
     // Build member list and day list for matrix
     const members = [...new Set(rows.map((r: any) => String(r.authorName)))].sort();
     const days = [...new Set(rows.map((r: any) => String(r.day)))].sort();

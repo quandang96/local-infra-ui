@@ -33,6 +33,7 @@ export type JiraIssueInput = {
   issueType?: string | null;
   status: string;
   statusCategory: string;
+  statusColor?: string | null;
   assigneeName?: string | null;
   priority?: string | null;
   sprint?: string | null;
@@ -41,6 +42,7 @@ export type JiraIssueInput = {
   parentSummary?: string | null;
   labels?: string | null; // JSON array string
   startDate?: string | null;
+  customFields?: string | null; // JSON object keyed by Jira field id
   jiraUpdatedAt: string;
   syncedAt: string;
   rawHash: string;
@@ -143,9 +145,9 @@ export class AuditDatabase {
       CREATE TABLE IF NOT EXISTS jira_issues (
         jira_id VARCHAR(80) NOT NULL, jira_key VARCHAR(80) PRIMARY KEY, project_key VARCHAR(80) NOT NULL,
         summary VARCHAR(500) NOT NULL, description TEXT, issue_type VARCHAR(100), status VARCHAR(100) NOT NULL,
-        status_category VARCHAR(40) NOT NULL, assignee_name VARCHAR(255), priority VARCHAR(80), sprint VARCHAR(255),
+        status_category VARCHAR(40) NOT NULL, status_color VARCHAR(40), assignee_name VARCHAR(255), priority VARCHAR(80), sprint VARCHAR(255),
         due_date VARCHAR(40), parent_key VARCHAR(80), parent_summary VARCHAR(500), labels TEXT,
-        start_date VARCHAR(40), jira_updated_at VARCHAR(40) NOT NULL, synced_at VARCHAR(40) NOT NULL, raw_hash VARCHAR(64) NOT NULL,
+        start_date VARCHAR(40), custom_fields TEXT, jira_updated_at VARCHAR(40) NOT NULL, synced_at VARCHAR(40) NOT NULL, raw_hash VARCHAR(64) NOT NULL,
         KEY jira_issues_project_status (project_key, status), KEY jira_issues_updated (jira_updated_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       `
@@ -154,13 +156,6 @@ export class AuditDatabase {
         highlight TINYINT(1) NOT NULL DEFAULT 0, risk TINYINT(1) NOT NULL DEFAULT 0,
         created_by VARCHAR(255) NOT NULL, updated_by VARCHAR(255) NOT NULL, created_at VARCHAR(40) NOT NULL,
         updated_at VARCHAR(40) NOT NULL
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-      `
-      CREATE TABLE IF NOT EXISTS jira_resources (
-        id VARCHAR(80) PRIMARY KEY, name VARCHAR(200) NOT NULL, url VARCHAR(2048) NOT NULL, type VARCHAR(40) NOT NULL,
-        jira_key VARCHAR(80), owner VARCHAR(255) NOT NULL, visibility VARCHAR(40) NOT NULL, description TEXT,
-        created_by VARCHAR(255) NOT NULL, created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL,
-        KEY jira_resources_jira_key (jira_key), KEY jira_resources_updated (updated_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       `
       CREATE TABLE IF NOT EXISTS jira_settings (
@@ -202,10 +197,18 @@ export class AuditDatabase {
     // Uses INFORMATION_SCHEMA check for MySQL 5.7 / MariaDB compatibility
     // (ADD COLUMN IF NOT EXISTS is only guaranteed from MySQL 8.0.3+).
     const columnMigrations: Array<{ column: string; ddl: string }> = [
-      { column: 'parent_key',     ddl: 'ALTER TABLE jira_issues ADD COLUMN parent_key VARCHAR(80) AFTER due_date' },
-      { column: 'parent_summary', ddl: 'ALTER TABLE jira_issues ADD COLUMN parent_summary VARCHAR(500) AFTER parent_key' },
-      { column: 'labels',         ddl: 'ALTER TABLE jira_issues ADD COLUMN labels TEXT AFTER parent_summary' },
-      { column: 'start_date',     ddl: 'ALTER TABLE jira_issues ADD COLUMN start_date VARCHAR(40) AFTER labels' },
+      { column: 'parent_key', ddl: 'ALTER TABLE jira_issues ADD COLUMN parent_key VARCHAR(80) AFTER due_date' },
+      {
+        column: 'parent_summary',
+        ddl: 'ALTER TABLE jira_issues ADD COLUMN parent_summary VARCHAR(500) AFTER parent_key',
+      },
+      { column: 'labels', ddl: 'ALTER TABLE jira_issues ADD COLUMN labels TEXT AFTER parent_summary' },
+      { column: 'start_date', ddl: 'ALTER TABLE jira_issues ADD COLUMN start_date VARCHAR(40) AFTER labels' },
+      {
+        column: 'status_color',
+        ddl: 'ALTER TABLE jira_issues ADD COLUMN status_color VARCHAR(40) AFTER status_category',
+      },
+      { column: 'custom_fields', ddl: 'ALTER TABLE jira_issues ADD COLUMN custom_fields TEXT AFTER start_date' },
     ];
     for (const { column, ddl } of columnMigrations) {
       const [rows] = await this.pool.execute<Array<RowDataPacket & { cnt: number }>>(
@@ -478,10 +481,10 @@ export class AuditDatabase {
     }
     const [rows] = await this.pool.query<TaskRow[]>(
       `SELECT i.jira_id AS jiraId, i.jira_key AS jiraKey, i.project_key AS projectKey, i.summary,
-       i.description, i.issue_type AS issueType, i.status, i.status_category AS statusCategory,
+       i.description, i.issue_type AS issueType, i.status, i.status_category AS statusCategory, i.status_color AS statusColor,
        i.assignee_name AS assigneeName, i.priority, i.sprint, i.due_date AS dueDate,
        i.parent_key AS parentKey, i.parent_summary AS parentSummary,
-       i.labels, i.start_date AS startDate,
+       i.labels, i.start_date AS startDate, i.custom_fields AS customFields,
        i.jira_updated_at AS jiraUpdatedAt, i.synced_at AS syncedAt,
        m.report_note AS reportNote, m.internal_category AS internalCategory, m.block_reason AS blockReason,
        COALESCE(m.highlight, 0) AS highlight, COALESCE(m.risk, 0) AS risk
@@ -515,14 +518,10 @@ export class AuditDatabase {
     const [syncRows] = await this.pool.query<TaskRow[]>(
       'SELECT * FROM jira_sync_runs ORDER BY started_at DESC LIMIT 1'
     );
-    const [resources] = await this.pool.query<TaskRow[]>(
-      'SELECT id, name, url, type, jira_key AS jiraKey, owner, visibility, updated_at AS updatedAt FROM jira_resources ORDER BY updated_at DESC LIMIT 5'
-    );
     return {
       metrics: counts[0],
       lastSync: syncRows[0] ?? null,
       recentIssues: (await this.listJiraIssues()).slice(0, 5),
-      resources,
     };
   }
 
@@ -573,15 +572,15 @@ export class AuditDatabase {
         else updated += 1;
         await connection.execute(
           `INSERT INTO jira_issues
-           (jira_id, jira_key, project_key, summary, description, issue_type, status, status_category,
-            assignee_name, priority, sprint, due_date, parent_key, parent_summary, labels, start_date,
+           (jira_id, jira_key, project_key, summary, description, issue_type, status, status_category, status_color,
+            assignee_name, priority, sprint, due_date, parent_key, parent_summary, labels, start_date, custom_fields,
             jira_updated_at, synced_at, raw_hash)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON DUPLICATE KEY UPDATE jira_id = VALUES(jira_id), project_key = VALUES(project_key), summary = VALUES(summary),
            description = VALUES(description), issue_type = VALUES(issue_type), status = VALUES(status),
-           status_category = VALUES(status_category), assignee_name = VALUES(assignee_name), priority = VALUES(priority),
+           status_category = VALUES(status_category), status_color = VALUES(status_color), assignee_name = VALUES(assignee_name), priority = VALUES(priority),
            sprint = VALUES(sprint), due_date = VALUES(due_date), parent_key = VALUES(parent_key),
-           parent_summary = VALUES(parent_summary), labels = VALUES(labels), start_date = VALUES(start_date),
+           parent_summary = VALUES(parent_summary), labels = VALUES(labels), start_date = VALUES(start_date), custom_fields = VALUES(custom_fields),
            jira_updated_at = VALUES(jira_updated_at), synced_at = VALUES(synced_at), raw_hash = VALUES(raw_hash)`,
           [
             issue.jiraId,
@@ -592,6 +591,7 @@ export class AuditDatabase {
             issue.issueType ?? null,
             issue.status,
             issue.statusCategory,
+            issue.statusColor ?? null,
             issue.assigneeName ?? null,
             issue.priority ?? null,
             issue.sprint ?? null,
@@ -600,6 +600,7 @@ export class AuditDatabase {
             issue.parentSummary ?? null,
             issue.labels ?? null,
             issue.startDate ?? null,
+            issue.customFields ?? null,
             issue.jiraUpdatedAt,
             issue.syncedAt,
             issue.rawHash,
@@ -657,60 +658,6 @@ export class AuditDatabase {
       ]
     );
     return this.getJiraSettings();
-  }
-
-  async listJiraResources() {
-    const [rows] = await this.pool.query<TaskRow[]>(
-      `SELECT id, name, url, type, jira_key AS jiraKey, owner, visibility, description,
-       created_by AS createdBy, created_at AS createdAt, updated_at AS updatedAt
-       FROM jira_resources ORDER BY updated_at DESC`
-    );
-    return rows;
-  }
-
-  async createJiraResource(resource: Record<string, string | null>) {
-    await this.pool.execute(
-      `INSERT INTO jira_resources (id, name, url, type, jira_key, owner, visibility, description, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        resource.id,
-        resource.name,
-        resource.url,
-        resource.type,
-        resource.jiraKey || null,
-        resource.owner,
-        resource.visibility,
-        resource.description || null,
-        resource.createdBy,
-        resource.createdAt,
-        resource.updatedAt,
-      ]
-    );
-    return resource;
-  }
-
-  async updateJiraResource(id: string, resource: Record<string, string | null>) {
-    const [result] = await this.pool.execute<mysql.ResultSetHeader>(
-      `UPDATE jira_resources SET name = ?, url = ?, type = ?, jira_key = ?, owner = ?, visibility = ?,
-       description = ?, updated_at = ? WHERE id = ?`,
-      [
-        resource.name,
-        resource.url,
-        resource.type,
-        resource.jiraKey || null,
-        resource.owner,
-        resource.visibility,
-        resource.description || null,
-        resource.updatedAt,
-        id,
-      ]
-    );
-    return result.affectedRows > 0;
-  }
-
-  async deleteJiraResource(id: string) {
-    const [result] = await this.pool.execute<mysql.ResultSetHeader>('DELETE FROM jira_resources WHERE id = ?', [id]);
-    return result.affectedRows > 0;
   }
 
   async addJiraAudit(
@@ -796,7 +743,16 @@ export class AuditDatabase {
          ON DUPLICATE KEY UPDATE jira_key = VALUES(jira_key), author_name = VALUES(author_name),
          author_account_id = VALUES(author_account_id), time_spent_seconds = VALUES(time_spent_seconds),
          started = VALUES(started), comment = VALUES(comment), synced_at = VALUES(synced_at)`,
-        [w.id, w.jiraKey, w.authorName, w.authorAccountId ?? null, w.timeSpentSeconds, w.started, w.comment ?? null, w.syncedAt]
+        [
+          w.id,
+          w.jiraKey,
+          w.authorName,
+          w.authorAccountId ?? null,
+          w.timeSpentSeconds,
+          w.started,
+          w.comment ?? null,
+          w.syncedAt,
+        ]
       );
     }
   }
@@ -818,10 +774,22 @@ export class AuditDatabase {
   async listJiraWorklogs(filters: { jiraKey?: string; assignee?: string; dateFrom?: string; dateTo?: string } = {}) {
     const where: string[] = [];
     const values: unknown[] = [];
-    if (filters.jiraKey) { where.push('jira_key = ?'); values.push(filters.jiraKey); }
-    if (filters.assignee) { where.push('author_name = ?'); values.push(filters.assignee); }
-    if (filters.dateFrom) { where.push('started >= ?'); values.push(filters.dateFrom); }
-    if (filters.dateTo) { where.push('started <= ?'); values.push(filters.dateTo + 'T23:59:59'); }
+    if (filters.jiraKey) {
+      where.push('jira_key = ?');
+      values.push(filters.jiraKey);
+    }
+    if (filters.assignee) {
+      where.push('author_name = ?');
+      values.push(filters.assignee);
+    }
+    if (filters.dateFrom) {
+      where.push('started >= ?');
+      values.push(filters.dateFrom);
+    }
+    if (filters.dateTo) {
+      where.push('started <= ?');
+      values.push(filters.dateTo + 'T23:59:59');
+    }
     const [rows] = await this.pool.query<TaskRow[]>(
       `SELECT id, jira_key AS jiraKey, author_name AS authorName, author_account_id AS authorAccountId,
        time_spent_seconds AS timeSpentSeconds, started, comment, synced_at AS syncedAt
@@ -843,31 +811,36 @@ export class AuditDatabase {
     return rows;
   }
 
-  async worklogReportByMemberByDay(dateFrom: string, dateTo: string) {
+  async worklogReportByMemberByDay(dateFrom: string, dateTo: string, authorName?: string) {
     // Returns rows: { authorName, day (YYYY-MM-DD string), totalSeconds, issueCount }
+    const where = ['started >= ?', 'started <= ?'];
+    const values: unknown[] = [dateFrom, dateTo + 'T23:59:59'];
+    if (authorName) {
+      where.push('author_name = ?');
+      values.push(authorName);
+    }
     const [rows] = await this.pool.query<TaskRow[]>(
       `SELECT author_name AS authorName,
        DATE_FORMAT(started, '%Y-%m-%d') AS day,
        SUM(time_spent_seconds) AS totalSeconds,
        COUNT(DISTINCT jira_key) AS issueCount
        FROM jira_worklogs
-       WHERE started >= ? AND started <= ?
+       WHERE ${where.join(' AND ')}
        GROUP BY author_name, DATE_FORMAT(started, '%Y-%m-%d')
        ORDER BY author_name, day`,
-      [dateFrom, dateTo + 'T23:59:59']
+      values
     );
     return rows;
   }
 
-  async worklogReportByTicket(
-    dateFrom: string,
-    dateTo: string,
-    authorName?: string
-  ) {
+  async worklogReportByTicket(dateFrom: string, dateTo: string, authorName?: string) {
     // Returns rows: { jiraKey, authorName, day (YYYY-MM-DD string), totalSeconds }
     const where: string[] = ['started >= ?', 'started <= ?'];
     const values: unknown[] = [dateFrom, dateTo + 'T23:59:59'];
-    if (authorName) { where.push('author_name = ?'); values.push(authorName); }
+    if (authorName) {
+      where.push('author_name = ?');
+      values.push(authorName);
+    }
     const [rows] = await this.pool.query<TaskRow[]>(
       `SELECT jira_key AS jiraKey,
        author_name AS authorName,
@@ -894,4 +867,3 @@ export class AuditDatabase {
     await this.pool.query(`DELETE FROM jira_comments WHERE jira_key IN (${placeholders})`, jiraKeys);
   }
 }
-

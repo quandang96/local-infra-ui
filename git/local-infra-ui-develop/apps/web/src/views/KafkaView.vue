@@ -14,7 +14,7 @@ const createOpen = ref(false);
 const newTopic = ref('');
 const partitionCount = ref(1);
 const key = ref('');
-const value = ref('{"event":"created"}');
+const value = ref('');
 const text = (value: unknown) => (typeof value === 'string' ? value : String(value ?? ''));
 const namedRows = (data: TableResult | null) => (data?.rows as JsonRecord[]) ?? [];
 const fail = (cause: unknown) => ElMessage.error(cause instanceof Error ? cause.message : 'Kafka request failed');
@@ -80,28 +80,31 @@ onMounted(load);
             <PanelControls />
           </div>
         </header>
-        <el-tabs
+        <el-tabs class="kafka-topic-tabs"
           ><el-tab-pane label="Topics"
-            ><el-table :data="topics?.rows" stripe max-height="330" @row-click="selectTopic"
-              ><el-table-column
-                v-for="column in topics?.columns"
-                :key="column.key"
-                :prop="column.key"
-                :label="column.label" /></el-table></el-tab-pane
+            ><div class="kafka-table-content"
+              ><el-table :data="topics?.rows" stripe max-height="330" @row-click="selectTopic"
+                ><el-table-column
+                  v-for="column in topics?.columns"
+                  :key="column.key"
+                  :prop="column.key"
+                  :label="column.label" /></el-table></div></el-tab-pane
           ><el-tab-pane label="Partitions"
-            ><el-table :data="partitions?.rows" stripe
-              ><el-table-column
-                v-for="column in partitions?.columns"
-                :key="column.key"
-                :prop="column.key"
-                :label="column.label" /></el-table></el-tab-pane
+            ><div class="kafka-table-content"
+              ><el-table :data="partitions?.rows" stripe max-height="330"
+                ><el-table-column
+                  v-for="column in partitions?.columns"
+                  :key="column.key"
+                  :prop="column.key"
+                  :label="column.label" /></el-table></div></el-tab-pane
           ><el-tab-pane label="Consumer groups"
-            ><el-table :data="groups?.rows" stripe
-              ><el-table-column
-                v-for="column in groups?.columns"
-                :key="column.key"
-                :prop="column.key"
-                :label="column.label" /></el-table></el-tab-pane
+            ><div class="kafka-table-content"
+              ><el-table :data="groups?.rows" stripe max-height="330"
+                ><el-table-column
+                  v-for="column in groups?.columns"
+                  :key="column.key"
+                  :prop="column.key"
+                  :label="column.label" /></el-table></div></el-tab-pane
         ></el-tabs>
       </section>
       <section class="panel">
@@ -109,7 +112,14 @@ onMounted(load);
         <div class="panel-body">
           <v-select v-model="topic" :items="namedRows(topics).map((item) => text(item.name))" label="Topic" />
           <v-text-field v-model="key" class="mt-3" label="Message key" />
-          <v-textarea v-model="value" class="mt-3" label="Message value" :rows="8" />
+          <v-textarea
+            v-model="value"
+            class="mt-3"
+            label="Message value"
+            placeholder='{"event":"created"}'
+            persistent-placeholder
+            :rows="8"
+          />
           <div class="toolbar">
             <v-btn color="primary" variant="flat" prepend-icon="mdi-send" @click="produce">Produce</v-btn>
             <v-btn color="error" prepend-icon="mdi-delete-outline" @click="removeTopic">Delete topic</v-btn>
@@ -141,3 +151,12 @@ onMounted(load);
     <LogPanel v-model:tail="logTail" title="Kafka broker logs" url="/api/services/kafka/logs/events" />
   </section>
 </template>
+
+<style scoped>
+.kafka-table-content {
+  padding: 0 16px 16px;
+}
+.kafka-topic-tabs :deep(.el-tabs__header) {
+  margin: 0 16px 15px;
+}
+</style>
