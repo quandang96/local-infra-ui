@@ -8,9 +8,9 @@ services:
     command: npm run dev
     environment:
       NODE_ENV: development
-      VITE_API_PROXY_TARGET: http://127.0.0.1:3001
+      VITE_API_PROXY_TARGET: http://127.0.0.1:3002
       VITE_USE_POLLING: ${VITE_USE_POLLING:-true}
-      PORT: 3001
+      PORT: 3002
       HOST: 0.0.0.0
       # Must match the root stack's Compose project name (no top-level `name:` in
       # /home/coder/git/docker-compose.yml, so Compose derives it from the
@@ -60,20 +60,19 @@ services:
       TRUST_CODER_PROXY: ${TRUST_CODER_PROXY:-true}
       CODER_ACTOR_HEADER: ${CODER_ACTOR_HEADER:-x-coder-user}
       # Cross-origin development clients. Override with a comma-separated list when needed.
-      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-http://localhost:5173,http://127.0.0.1:5173}
+      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-http://localhost:3001,http://127.0.0.1:3001}
       GOPATH: /home/coder/go
       GOMODCACHE: /home/coder/go/pkg/mod
       GOCACHE: /home/coder/.cache/go-build
       GOBIN: /home/coder/go/bin
     ports:
       - '3001:3001'
-      - '5173:5173'
-      - '8090:8090'
-      - '8091:8091'
-      - '8092:8092'
-      - '50062:50062'
-      - '50059:50059'
-      - '50061:50061'
+      # - '8090:8090'
+      # - '8091:8091'
+      # - '8092:8092'
+      # - '50062:50062'
+      # - '50059:50059'
+      # - '50061:50061'
     volumes:
       # Source changes are visible immediately to tsx watch and Vite.
       - .:/workspace
@@ -105,6 +104,10 @@ services:
       - git-default
       # External network shared with mysql and redash (see /home/coder/git/docker-compose.yml).
       - shared-db-network
+      # Private Redash network. Managed services inherit this container's
+      # network namespace, so they can reach redash-postgres and redash-redis
+      # by their Compose service names as well.
+      - redash-internal
 
 volumes:
   control-center-data:
@@ -117,3 +120,6 @@ networks:
   shared-db-network:
     external: true
     name: omnipf-shared-db
+  redash-internal:
+    external: true
+    name: git_redash-internal
