@@ -106,6 +106,8 @@ const report = ref<Report>({
 const syncRuns = ref<any[]>([]);
 const audits = ref<any[]>([]);
 const filters = reactive({ q: '', status: '', assignee: '', priority: '', sprint: '', parentKey: '' });
+const issueParentSearch = ref('');
+const boardParentSearch = ref('');
 const boardDueStatus = ref('');
 const dueStatusOptions = [
   { value: 'on-track', label: 'On track', hint: 'Due in 3+ days', icon: 'mdi-circle' },
@@ -127,6 +129,7 @@ const wlAuthorFilter = ref('');
 const wlSprintFilter = ref('');
 const wlParentFilter = ref('');
 const wlTicketFilter = ref('');
+const wlParentSearch = ref('');
 const wlTicketSearch = ref('');
 const wlLoading = ref(false);
 const wlMemberReport = ref<WorklogReport | null>(null);
@@ -160,17 +163,36 @@ const assigneeOptions = computed(() =>
 const priorityOptions = computed(() => unique('priority'));
 const sprintOptions = computed(() => unique('sprint'));
 const parentOptions = computed(() =>
-  [...new Map(issues.value.filter((issue) => issue.parentKey).map((issue) => [issue.parentKey!, issue.parentSummary])).entries()]
-    .map(([value, summary]) => ({ value, label: summary ? `${value} · ${summary}` : value }))
+  [
+    ...new Map(
+      issues.value.filter((issue) => issue.parentKey).map((issue) => [issue.parentKey!, issue.parentSummary])
+    ).entries(),
+  ]
+    .map(([value, summary]) => ({ value, label: summary || value }))
     .sort((first, second) => first.label.localeCompare(second.label))
 );
-const wlTicketOptions = computed(() =>
-  [...new Set([...issues.value.map((issue) => issue.jiraKey), ...wlKnownTickets.value])].sort()
-);
-const filteredWlTicketOptions = computed(() => {
-  const query = wlTicketSearch.value.trim().toLowerCase();
-  return query ? wlTicketOptions.value.filter((ticket) => ticket.toLowerCase().includes(query)) : wlTicketOptions.value;
+const wlTicketOptions = computed(() => {
+  const summaries = new Map(issues.value.map((issue) => [issue.jiraKey, issue.summary]));
+  return [...new Set([...summaries.keys(), ...wlKnownTickets.value])]
+    .sort()
+    .map((value) => ({ value, label: summaries.get(value) ? `${value} · ${summaries.get(value)}` : value }));
 });
+function matchesDropdownSearch(option: { value: string; label: string }, search: string) {
+  const query = search.trim().toLocaleLowerCase();
+  return !query || option.value.toLocaleLowerCase().includes(query) || option.label.toLocaleLowerCase().includes(query);
+}
+const filteredWlParentOptions = computed(() =>
+  parentOptions.value.filter((option) => matchesDropdownSearch(option, wlParentSearch.value))
+);
+const filteredIssueParentOptions = computed(() =>
+  parentOptions.value.filter((option) => matchesDropdownSearch(option, issueParentSearch.value))
+);
+const filteredBoardParentOptions = computed(() =>
+  parentOptions.value.filter((option) => matchesDropdownSearch(option, boardParentSearch.value))
+);
+const filteredWlTicketOptions = computed(() =>
+  wlTicketOptions.value.filter((option) => matchesDropdownSearch(option, wlTicketSearch.value))
+);
 function parseLabels(labels?: string): string[] {
   if (!labels) return [];
   try {
@@ -181,8 +203,8 @@ function parseLabels(labels?: string): string[] {
 }
 const envTemplate = computed(() =>
   settings.jiraType === 'cloud'
-    ? `JIRA_TYPE=cloud\nJIRA_BASE_URL=${settings.baseUrl || 'https://company.atlassian.net'}\nJIRA_INTERNAL_URL=\nJIRA_API_TOKEN=<atlassian-api-token>\nJIRA_EMAIL=<jira-account-email>\nJIRA_CUSTOM_FIELDS=[]\nJIRA_ASSIGNEE_DISPLAY_MAP={}\nJIRA_REQUEST_TIMEOUT_MS=15000`
-    : `JIRA_TYPE=data_center\nJIRA_BASE_URL=${settings.baseUrl || 'https://jira.company.internal'}\nJIRA_INTERNAL_URL=\nJIRA_API_TOKEN=<jira-data-center-pat>\nJIRA_EMAIL=\nJIRA_CUSTOM_FIELDS=[]\nJIRA_ASSIGNEE_DISPLAY_MAP={}\nJIRA_REQUEST_TIMEOUT_MS=15000`
+    ? `JIRA_TYPE=cloud\nJIRA_BASE_URL=${settings.baseUrl || 'https://company.atlassian.net'}\nJIRA_INTERNAL_URL=\nJIRA_API_TOKEN=<atlassian-api-token>\nJIRA_EMAIL=<jira-account-email>\nJIRA_CUSTOM_FIELDS=[{"id":"customfield_10000","label":"Epic","role":"epic"}]\nJIRA_ASSIGNEE_DISPLAY_MAP={}\nJIRA_REQUEST_TIMEOUT_MS=15000\nJIRA_FIELD_OPTION_CACHE_TTL_MS=900000`
+    : `JIRA_TYPE=data_center\nJIRA_BASE_URL=${settings.baseUrl || 'https://jira.company.internal'}\nJIRA_INTERNAL_URL=\nJIRA_API_TOKEN=<jira-data-center-pat>\nJIRA_EMAIL=\nJIRA_CUSTOM_FIELDS=[]\nJIRA_ASSIGNEE_DISPLAY_MAP={}\nJIRA_REQUEST_TIMEOUT_MS=15000\nJIRA_FIELD_OPTION_CACHE_TTL_MS=900000`
 );
 const configurationChecks = computed(() => [
   { label: 'Backend secret', ready: Boolean(settings.hasToken) },
@@ -279,7 +301,9 @@ function dueDateSortValue(value?: string | Date | null) {
   return Number.isNaN(timestamp) ? Number.MAX_SAFE_INTEGER : timestamp;
 }
 function prioritySortValue(priority?: string) {
-  const value = String(priority ?? '').trim().toLowerCase();
+  const value = String(priority ?? '')
+    .trim()
+    .toLowerCase();
   if (/(highest|critical|blocker|urgent|p1)/.test(value)) return 0;
   if (/(^|\s)(high|major|p2)(\s|$)/.test(value)) return 1;
   if (/(medium|normal|p3)/.test(value)) return 2;
@@ -311,11 +335,19 @@ function boardWarning(issue: Issue): BoardWarning {
     return { tone: 'complete', icon: '✓', cornerIcon: 'mdi-check', label: 'Completed' };
   }
   const days = daysUntilDue(issue.dueDate);
-  if (days === null) return { tone: 'no-due', icon: '📅', cornerIcon: 'mdi-calendar-blank-outline', label: 'No due date' };
-  if (days <= -3) return { tone: 'overdue-severe', icon: '🔥', cornerIcon: 'mdi-fire', label: `Overdue ${Math.abs(days)}d` };
+  if (days === null)
+    return { tone: 'no-due', icon: '📅', cornerIcon: 'mdi-calendar-blank-outline', label: 'No due date' };
+  if (days <= -3)
+    return { tone: 'overdue-severe', icon: '🔥', cornerIcon: 'mdi-fire', label: `Overdue ${Math.abs(days)}d` };
   if (days < 0) return { tone: 'overdue', icon: '🔥', cornerIcon: 'mdi-fire', label: `Overdue ${Math.abs(days)}d` };
   if (days === 0) return { tone: 'due-today', icon: '⏰', cornerIcon: 'mdi-clock-outline', label: 'Due today' };
-  if (days <= 2) return { tone: 'due-soon', icon: '⏰', cornerIcon: 'mdi-clock-outline', label: days === 1 ? 'Due tomorrow' : 'Due in 2d' };
+  if (days <= 2)
+    return {
+      tone: 'due-soon',
+      icon: '⏰',
+      cornerIcon: 'mdi-clock-outline',
+      label: days === 1 ? 'Due tomorrow' : 'Due in 2d',
+    };
   return { tone: 'on-track', icon: '📅', cornerIcon: 'mdi-calendar-blank-outline', label: `Due in ${days}d` };
 }
 function columnDueSummary(columnIssues: Issue[]): BoardDueSummary[] {
@@ -379,6 +411,9 @@ function formatDay(isoDay: unknown): string {
 function jiraUrl(issue: Issue | string) {
   const jiraKey = typeof issue === 'string' ? issue : issue.jiraKey;
   return `${settings.baseUrl.replace(/\/+$/, '')}/browse/${encodeURIComponent(jiraKey)}`;
+}
+function isJiraIssueKey(value?: string) {
+  return Boolean(value && /^[A-Z][A-Z0-9_]*-\d+$/.test(value));
 }
 function parseCustomFields(value?: string): Record<string, string> {
   if (!value) return {};
@@ -705,11 +740,15 @@ onMounted(loadAll);
               </div>
               <div class="status-overview-content">
                 <div class="status-donut" :style="{ background: overviewStatusBackground }">
-                  <div><strong>{{ overviewStatusTotal }}</strong><span>issues</span></div>
+                  <div>
+                    <strong>{{ overviewStatusTotal }}</strong
+                    ><span>issues</span>
+                  </div>
                 </div>
                 <div class="status-chart-legend">
                   <div v-for="item in overviewStatusItems" :key="item.label">
-                    <span :style="{ background: item.color }"></span><b>{{ item.label }}</b><strong>{{ item.count }}</strong>
+                    <span :style="{ background: item.color }"></span><b>{{ item.label }}</b
+                    ><strong>{{ item.count }}</strong>
                   </div>
                 </div>
               </div>
@@ -723,8 +762,13 @@ onMounted(loadAll);
               </div>
               <div v-if="report.groups.length" class="delivery-chart">
                 <div v-for="group in report.groups" :key="group.name" class="delivery-chart-row">
-                  <div><span>{{ group.name }}</span><b>{{ group.done }}/{{ group.total }}</b></div>
-                  <div class="delivery-chart-track"><span :style="{ width: `${deliveryCompletion(group)}%` }"></span></div>
+                  <div>
+                    <span>{{ group.name }}</span
+                    ><b>{{ group.done }}/{{ group.total }}</b>
+                  </div>
+                  <div class="delivery-chart-track">
+                    <span :style="{ width: `${deliveryCompletion(group)}%` }"></span>
+                  </div>
                 </div>
               </div>
               <el-empty v-else description="Chưa có dữ liệu delivery" :image-size="44" />
@@ -783,9 +827,25 @@ onMounted(loadAll);
               <el-select v-model="filters.sprint" clearable placeholder="Sprint"
                 ><el-option v-for="item in sprintOptions" :key="item" :value="item"
               /></el-select>
-              <el-select v-model="filters.parentKey" clearable placeholder="Parent"
-                ><el-option v-for="item in parentOptions" :key="item.value" :label="item.label" :value="item.value"
-              /></el-select>
+              <el-select v-model="filters.parentKey" clearable placeholder="Parent">
+                <template #header>
+                  <div class="jira-dropdown-search">
+                    <el-input
+                      v-model="issueParentSearch"
+                      clearable
+                      placeholder="Tìm Parent..."
+                      size="small"
+                      @keydown.stop
+                    />
+                  </div>
+                </template>
+                <el-option
+                  v-for="item in filteredIssueParentOptions"
+                  :key="item.value"
+                  :label="item.label"
+                  :value="item.value"
+                />
+              </el-select>
             </div>
             <el-table
               class="issues-table"
@@ -813,7 +873,9 @@ onMounted(loadAll);
               >
               <el-table-column label="Parent" width="120"
                 ><template #default="{ row }"
-                  ><span v-if="row.parentKey" class="parent-chip" :title="row.parentSummary">{{ row.parentKey }}</span
+                  ><span v-if="row.parentKey" class="parent-chip" :title="row.parentKey">{{
+                    row.parentSummary || row.parentKey
+                  }}</span
                   ><span v-else class="text-muted">—</span></template
                 ></el-table-column
               >
@@ -856,17 +918,37 @@ onMounted(loadAll);
             >
           </template>
           <div class="board-filters">
-              <el-input v-model="filters.q" clearable placeholder="Filter board..." /><el-select
+            <el-input v-model="filters.q" clearable placeholder="Filter board..." /><el-select
               v-model="filters.assignee"
               clearable
               placeholder="All members"
-              ><el-option v-for="item in assigneeOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select
+              ><el-option
+                v-for="item in assigneeOptions"
+                :key="item.value"
+                :label="item.label"
+                :value="item.value" /></el-select
             ><el-select v-model="filters.sprint" clearable placeholder="All sprints"
               ><el-option v-for="item in sprintOptions" :key="item" :value="item"
             /></el-select>
-            <el-select v-model="filters.parentKey" clearable placeholder="All parents"
-              ><el-option v-for="item in parentOptions" :key="item.value" :label="item.label" :value="item.value"
-            /></el-select>
+            <el-select v-model="filters.parentKey" clearable placeholder="All parents">
+              <template #header>
+                <div class="jira-dropdown-search">
+                  <el-input
+                    v-model="boardParentSearch"
+                    clearable
+                    placeholder="Tìm Parent..."
+                    size="small"
+                    @keydown.stop
+                  />
+                </div>
+              </template>
+              <el-option
+                v-for="item in filteredBoardParentOptions"
+                :key="item.value"
+                :label="item.label"
+                :value="item.value"
+              />
+            </el-select>
             <el-select v-model="boardDueStatus" clearable placeholder="Due date status">
               <el-option
                 v-for="item in dueStatusOptions"
@@ -895,7 +977,9 @@ onMounted(loadAll);
               <header>
                 <div class="board-column-title">
                   <b>{{ column.label }}</b>
-                  <span class="board-column-count" :aria-label="`${column.issues.length} issues`">{{ column.issues.length }}</span>
+                  <span class="board-column-count" :aria-label="`${column.issues.length} issues`">{{
+                    column.issues.length
+                  }}</span>
                 </div>
                 <div v-if="column.dueSummary.length" class="board-column-summary">
                   <span
@@ -939,7 +1023,14 @@ onMounted(loadAll);
                         aria-hidden="true"
                       >
                         <defs>
-                          <linearGradient :id="`board-fire-outer-${issue.jiraKey}`" x1="600" y1="0" x2="600" y2="1200" gradientUnits="userSpaceOnUse">
+                          <linearGradient
+                            :id="`board-fire-outer-${issue.jiraKey}`"
+                            x1="600"
+                            y1="0"
+                            x2="600"
+                            y2="1200"
+                            gradientUnits="userSpaceOnUse"
+                          >
                             <stop offset="0" stop-color="#fff1b3" stop-opacity=".98" />
                             <stop offset=".38" stop-color="#ffe18c" stop-opacity=".92" />
                             <stop offset=".72" stop-color="#ffc294" stop-opacity=".68" />
@@ -953,7 +1044,14 @@ onMounted(loadAll);
                       </svg>
                       <svg class="board-fire-flame" viewBox="0 0 1200 1200" aria-hidden="true">
                         <defs>
-                          <linearGradient :id="`board-fire-inner-${issue.jiraKey}`" x1="600" y1="0" x2="600" y2="1200" gradientUnits="userSpaceOnUse">
+                          <linearGradient
+                            :id="`board-fire-inner-${issue.jiraKey}`"
+                            x1="600"
+                            y1="0"
+                            x2="600"
+                            y2="1200"
+                            gradientUnits="userSpaceOnUse"
+                          >
                             <stop offset="0" stop-color="#ffd54a" />
                             <stop offset=".28" stop-color="#ffb833" />
                             <stop offset=".62" stop-color="#ff6b43" />
@@ -987,16 +1085,35 @@ onMounted(loadAll);
                   </span>
                 </div>
                 <strong>{{ issue.summary }}</strong>
+                <a
+                  v-if="issue.parentKey"
+                  class="board-card-parent"
+                  :href="isJiraIssueKey(issue.parentKey) ? jiraUrl(issue.parentKey) : undefined"
+                  :target="isJiraIssueKey(issue.parentKey) ? '_blank' : undefined"
+                  :rel="isJiraIssueKey(issue.parentKey) ? 'noreferrer' : undefined"
+                  :title="issue.parentKey"
+                  @click.stop
+                >
+                  <v-icon icon="mdi-source-branch" size="13" />
+                  <span>Parent</span>
+                  <b>{{ issue.parentSummary || issue.parentKey }}</b>
+                </a>
                 <div class="board-card-meta">
                   <div class="board-card-meta-chips">
                     <el-tag size="small" class="jira-status" :class="`jira-status--${statusTone(issue)}`">{{
                       issue.status
                     }}</el-tag>
                     <span class="board-card-due-chip" :class="`board-card-due-chip--${boardWarning(issue).tone}`">
-                      <i>{{ boardWarning(issue).icon }}</i>{{ boardWarning(issue).label }}
+                      <i>{{ boardWarning(issue).icon }}</i
+                      >{{ boardWarning(issue).label }}
                     </span>
                   </div>
-                  <span class="board-assignee">{{ assigneeLabel(issue.assigneeName) }}</span>
+                  <span class="board-assignee" :title="assigneeLabel(issue.assigneeName)">
+                    <v-icon icon="mdi-account-circle-outline" size="18" />
+                    <span
+                      ><b>{{ assigneeLabel(issue.assigneeName) }}</b></span
+                    >
+                  </span>
                 </div>
               </article>
             </section>
@@ -1067,7 +1184,23 @@ onMounted(loadAll);
                 placeholder="Tất cả Parent"
                 size="small"
               >
-                <el-option v-for="parent in parentOptions" :key="parent.value" :label="parent.label" :value="parent.value" />
+                <template #header>
+                  <div class="jira-dropdown-search">
+                    <el-input
+                      v-model="wlParentSearch"
+                      clearable
+                      placeholder="Tìm Parent..."
+                      size="small"
+                      @keydown.stop
+                    />
+                  </div>
+                </template>
+                <el-option
+                  v-for="parent in filteredWlParentOptions"
+                  :key="parent.value"
+                  :label="parent.label"
+                  :value="parent.value"
+                />
               </el-select>
               <!-- Filter ticket (chỉ hiện khi mode by-ticket) -->
               <el-select
@@ -1079,17 +1212,22 @@ onMounted(loadAll);
                 size="small"
               >
                 <template #header>
-                  <div class="wl-ticket-search">
+                  <div class="jira-dropdown-search">
                     <el-input
                       v-model="wlTicketSearch"
                       clearable
-                      placeholder="Tìm ticket..."
+                      placeholder="Tìm Ticket..."
                       size="small"
                       @keydown.stop
                     />
                   </div>
                 </template>
-                <el-option v-for="t in filteredWlTicketOptions" :key="t" :label="t" :value="t" />
+                <el-option
+                  v-for="ticket in filteredWlTicketOptions"
+                  :key="ticket.value"
+                  :label="ticket.label"
+                  :value="ticket.value"
+                />
               </el-select>
               <v-btn
                 class="wl-action"
@@ -1442,13 +1580,15 @@ onMounted(loadAll);
                 >Parent
                 <b v-if="selectedIssue.parentKey">
                   <a
+                    v-if="isJiraIssueKey(selectedIssue.parentKey)"
                     :href="`${settings.baseUrl}/browse/${selectedIssue.parentKey}`"
                     target="_blank"
                     rel="noreferrer"
                     class="parent-link"
                     >{{ selectedIssue.parentKey }}</a
                   >
-                  <small>{{ selectedIssue.parentSummary }}</small>
+                  <span v-else class="parent-link">{{ selectedIssue.parentSummary || selectedIssue.parentKey }}</span>
+                  <small v-if="isJiraIssueKey(selectedIssue.parentKey)">{{ selectedIssue.parentSummary }}</small>
                 </b>
                 <b v-else>—</b>
               </span>
@@ -1470,10 +1610,18 @@ onMounted(loadAll);
             <el-form label-position="top">
               <el-form-item label="Internal category"><el-input v-model="metadata.internalCategory" /></el-form-item>
               <el-form-item label="Report note"
-                ><el-input v-model="metadata.reportNote" type="textarea" :rows="4" placeholder="Nhập ghi chú nội bộ cho báo cáo..."
+                ><el-input
+                  v-model="metadata.reportNote"
+                  type="textarea"
+                  :rows="4"
+                  placeholder="Nhập ghi chú nội bộ cho báo cáo..."
               /></el-form-item>
               <el-form-item label="Block reason"
-                ><el-input v-model="metadata.blockReason" type="textarea" :rows="3" placeholder="Mô tả nguyên nhân đang bị chặn..."
+                ><el-input
+                  v-model="metadata.blockReason"
+                  type="textarea"
+                  :rows="3"
+                  placeholder="Mô tả nguyên nhân đang bị chặn..."
               /></el-form-item>
               <div class="check-row">
                 <el-checkbox v-model="metadata.highlight">Highlight</el-checkbox>
@@ -2059,7 +2207,7 @@ onMounted(loadAll);
   color: inherit;
   font-size: 10px;
   font-weight: 700;
-  opacity: .78;
+  opacity: 0.78;
 }
 .due-filter-option--on-track {
   background: #eaf8ef;
@@ -2231,8 +2379,15 @@ onMounted(loadAll);
   stroke-linejoin: round;
 }
 @keyframes board-clock-soft-pulse {
-  0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgb(245 158 11 / 20%); }
-  50% { transform: scale(1.07); box-shadow: 0 0 0 8px rgb(245 158 11 / 6%); }
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgb(245 158 11 / 20%);
+  }
+  50% {
+    transform: scale(1.07);
+    box-shadow: 0 0 0 8px rgb(245 158 11 / 6%);
+  }
 }
 .board-card-alert-icon.board-warning--overdue,
 .board-card-alert-icon.board-warning--overdue-severe {
@@ -2312,7 +2467,7 @@ onMounted(loadAll);
   z-index: 4;
   border-radius: 2px 70% 70% 70%;
   transform: rotate(45deg);
-  opacity: .9;
+  opacity: 0.9;
 }
 .board-fire-spark--1 {
   top: -5px;
@@ -2355,42 +2510,105 @@ onMounted(loadAll);
   animation: board-fire-spark-5 1.22s ease-in-out infinite;
 }
 @keyframes board-fire-halo {
-  0%, 100% { transform: scale(1); filter: drop-shadow(0 4px 10px rgb(239 68 68 / 14%)); }
-  50% { transform: scale(1.045); filter: drop-shadow(0 7px 14px rgb(239 68 68 / 18%)); }
+  0%,
+  100% {
+    transform: scale(1);
+    filter: drop-shadow(0 4px 10px rgb(239 68 68 / 14%));
+  }
+  50% {
+    transform: scale(1.045);
+    filter: drop-shadow(0 7px 14px rgb(239 68 68 / 18%));
+  }
 }
 @keyframes board-fire-outline-breathe {
-  0%, 100% { transform: translateX(-50%) translateY(0) scaleX(1) scaleY(1); opacity: .96; }
-  50% { transform: translateX(-50%) translateY(-1px) scaleX(1.025) scaleY(1.045); opacity: 1; }
+  0%,
+  100% {
+    transform: translateX(-50%) translateY(0) scaleX(1) scaleY(1);
+    opacity: 0.96;
+  }
+  50% {
+    transform: translateX(-50%) translateY(-1px) scaleX(1.025) scaleY(1.045);
+    opacity: 1;
+  }
 }
 @keyframes board-fire-flicker {
-  0%, 100% { transform: translateY(0) scaleX(1) scaleY(1) rotate(0); }
-  30% { transform: translateY(-1.5px) scaleX(.95) scaleY(1.08) rotate(-1.4deg); }
-  63% { transform: translateY(-.6px) scaleX(1.03) scaleY(1.02) rotate(1.4deg); }
+  0%,
+  100% {
+    transform: translateY(0) scaleX(1) scaleY(1) rotate(0);
+  }
+  30% {
+    transform: translateY(-1.5px) scaleX(0.95) scaleY(1.08) rotate(-1.4deg);
+  }
+  63% {
+    transform: translateY(-0.6px) scaleX(1.03) scaleY(1.02) rotate(1.4deg);
+  }
 }
 @keyframes board-fire-heavy-flicker {
-  0%, 100% { transform: translateY(0) scaleX(1) scaleY(1) rotate(0); }
-  28% { transform: translateY(-2.2px) scaleX(.94) scaleY(1.12) rotate(-1.6deg); }
-  62% { transform: translateY(-.9px) scaleX(1.04) scaleY(1.04) rotate(1.6deg); }
+  0%,
+  100% {
+    transform: translateY(0) scaleX(1) scaleY(1) rotate(0);
+  }
+  28% {
+    transform: translateY(-2.2px) scaleX(0.94) scaleY(1.12) rotate(-1.6deg);
+  }
+  62% {
+    transform: translateY(-0.9px) scaleX(1.04) scaleY(1.04) rotate(1.6deg);
+  }
 }
 @keyframes board-fire-spark-1 {
-  0%, 100% { transform: translateY(4px) rotate(45deg) scale(.55); opacity: .08; }
-  50% { transform: translateY(-7px) rotate(45deg) scale(1.08); opacity: .95; }
+  0%,
+  100% {
+    transform: translateY(4px) rotate(45deg) scale(0.55);
+    opacity: 0.08;
+  }
+  50% {
+    transform: translateY(-7px) rotate(45deg) scale(1.08);
+    opacity: 0.95;
+  }
 }
 @keyframes board-fire-spark-2 {
-  0%, 100% { transform: translateY(5px) rotate(45deg) scale(.5); opacity: .08; }
-  50% { transform: translateY(-6px) rotate(45deg) scale(1.02); opacity: .86; }
+  0%,
+  100% {
+    transform: translateY(5px) rotate(45deg) scale(0.5);
+    opacity: 0.08;
+  }
+  50% {
+    transform: translateY(-6px) rotate(45deg) scale(1.02);
+    opacity: 0.86;
+  }
 }
 @keyframes board-fire-spark-3 {
-  0%, 100% { transform: translateY(3px) rotate(45deg) scale(.52); opacity: .08; }
-  55% { transform: translateY(-5px) rotate(45deg) scale(.98); opacity: .76; }
+  0%,
+  100% {
+    transform: translateY(3px) rotate(45deg) scale(0.52);
+    opacity: 0.08;
+  }
+  55% {
+    transform: translateY(-5px) rotate(45deg) scale(0.98);
+    opacity: 0.76;
+  }
 }
 @keyframes board-fire-spark-4 {
-  0%, 100% { transform: translateY(4px) rotate(45deg) scale(.48); opacity: .06; }
-  55% { transform: translateY(-6px) rotate(45deg) scale(.9); opacity: .65; }
+  0%,
+  100% {
+    transform: translateY(4px) rotate(45deg) scale(0.48);
+    opacity: 0.06;
+  }
+  55% {
+    transform: translateY(-6px) rotate(45deg) scale(0.9);
+    opacity: 0.65;
+  }
 }
 @keyframes board-fire-spark-5 {
-  0%, 100% { transform: translate(0, 2px) rotate(45deg) scale(.45); opacity: .06; }
-  50% { transform: translate(5px, -4px) rotate(45deg) scale(.84); opacity: .58; }
+  0%,
+  100% {
+    transform: translate(0, 2px) rotate(45deg) scale(0.45);
+    opacity: 0.06;
+  }
+  50% {
+    transform: translate(5px, -4px) rotate(45deg) scale(0.84);
+    opacity: 0.58;
+  }
 }
 .board-card:hover {
   border-color: var(--jira-tab-active-border);
@@ -2415,6 +2633,31 @@ onMounted(loadAll);
   font-size: 12px;
   line-height: 1.45;
 }
+.board-card-parent {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 10px;
+  line-height: 1;
+  text-decoration: none;
+}
+.board-card-parent:hover {
+  background: #e5edf8;
+  color: var(--jira-ticket);
+}
+.board-card-parent b {
+  overflow: hidden;
+  color: #3b5b8f;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .board-card-meta {
   display: flex;
   align-items: center;
@@ -2432,8 +2675,33 @@ onMounted(loadAll);
   flex-wrap: wrap;
 }
 .board-assignee {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 150px;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 7px;
+  border-radius: 7px;
+  background: #f1f5f9;
+  color: #52657d;
+}
+.board-assignee > span {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+.board-assignee small {
+  color: #7a8ca4;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+.board-assignee b {
   overflow: hidden;
-  max-width: 125px;
+  color: #334155;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2527,20 +2795,40 @@ onMounted(loadAll);
 }
 .board-card--overdue {
   border-left-color: #f87171;
-  box-shadow: 0 8px 24px rgb(15 23 42 / 5.5%), 0 0 0 1px rgb(239 68 68 / 3.8%), 0 0 18px rgb(239 68 68 / 8%);
+  box-shadow:
+    0 8px 24px rgb(15 23 42 / 5.5%),
+    0 0 0 1px rgb(239 68 68 / 3.8%),
+    0 0 18px rgb(239 68 68 / 8%);
 }
 .board-card--overdue-severe {
   border-color: #f05252;
   border-left-width: 4px;
-  box-shadow: 0 8px 24px rgb(15 23 42 / 5.5%), 0 0 0 1px rgb(239 68 68 / 8%), 0 0 24px rgb(239 68 68 / 16%);
+  box-shadow:
+    0 8px 24px rgb(15 23 42 / 5.5%),
+    0 0 0 1px rgb(239 68 68 / 8%),
+    0 0 24px rgb(239 68 68 / 16%);
   animation: board-card-danger-pulse 1.65s ease-in-out infinite;
 }
 .board-card--overdue-severe:hover {
-  box-shadow: 0 12px 30px rgb(15 23 42 / 8%), 0 0 0 1px rgb(239 68 68 / 12%), 0 0 30px rgb(239 68 68 / 22%);
+  box-shadow:
+    0 12px 30px rgb(15 23 42 / 8%),
+    0 0 0 1px rgb(239 68 68 / 12%),
+    0 0 30px rgb(239 68 68 / 22%);
 }
 @keyframes board-card-danger-pulse {
-  0%, 100% { box-shadow: 0 8px 24px rgb(15 23 42 / 5.5%), 0 0 0 1px rgb(239 68 68 / 8%), 0 0 20px rgb(239 68 68 / 14%); }
-  50% { box-shadow: 0 8px 24px rgb(15 23 42 / 6%), 0 0 0 2px rgb(239 68 68 / 18%), 0 0 30px rgb(239 68 68 / 28%); }
+  0%,
+  100% {
+    box-shadow:
+      0 8px 24px rgb(15 23 42 / 5.5%),
+      0 0 0 1px rgb(239 68 68 / 8%),
+      0 0 20px rgb(239 68 68 / 14%);
+  }
+  50% {
+    box-shadow:
+      0 8px 24px rgb(15 23 42 / 6%),
+      0 0 0 2px rgb(239 68 68 / 18%),
+      0 0 30px rgb(239 68 68 / 28%);
+  }
 }
 .board-card--complete {
   border-left-color: #4ade80;
@@ -3060,12 +3348,12 @@ onMounted(loadAll);
 .wl-ticket-select {
   width: 190px;
 }
-.wl-ticket-search {
+.jira-dropdown-search {
   padding: 7px;
   border-bottom: 1px solid var(--jira-border);
   background: var(--jira-surface);
 }
-.wl-ticket-search :deep(.el-input__wrapper) {
+.jira-dropdown-search :deep(.el-input__wrapper) {
   min-height: 30px !important;
 }
 .wl-controls-bar :deep(.el-input__wrapper),
