@@ -133,20 +133,20 @@ Service `daemon` có thể Start/Stop/Restart, xem log và xuất hiện trong t
 
 Các giá trị bên dưới có sẵn trong `.env.example`; thay đổi theo port/hostname của project. Khi Control Center nằm cùng Docker network với target service, dùng hostname service Compose (ví dụ `mysql`, `kafka`, `spanner`) thay vì `localhost`.
 
-| Nhóm          | Biến cấu hình                                                                                                                                                           |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Web/API       | `PORT`, `HOST`, `ALLOWED_ORIGIN`, `TRUST_CODER_PROXY`, `CODER_ACTOR_HEADER`                                                                                             |
-| Task database | `TASK_DB_PATH`                                                                                                                                                          |
-| MySQL         | `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`                                                                                            |
-| Datastore     | `DATASTORE_EMULATOR_HOST`, `DATASTORE_PROJECT_ID`                                                                                                                       |
-| Kafka         | `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_UI_INTERNAL_URL`, `KAFKA_UI_OPEN_URL`                                                                                                 |
-| Spanner       | `SPANNER_EMULATOR_HOST`, `SPANNER_PROJECT_ID`, `SPANNER_INSTANCE_ID`, `SPANNER_DATABASE_ID`                                                                             |
-| Redash        | `REDASH_INTERNAL_URL`, `REDASH_OPEN_URL`                                                                                                                                |
-| Keycloak      | `KEYCLOAK_INTERNAL_URL`, `KEYCLOAK_OPEN_URL`                                                                                                                            |
-| MailHog       | `MAILHOG_INTERNAL_URL`, `MAILHOG_OPEN_URL`                                                                                                                              |
-| BigQuery      | `BIGQUERY_API_ENDPOINT`, `BIGQUERY_PROJECT_ID`                                                                                                                          |
-| Jira          | `JIRA_TYPE`, `JIRA_BASE_URL`, `JIRA_INTERNAL_URL`, `JIRA_JQL`, `JIRA_ALLOWED_PROJECTS`, `JIRA_CUSTOM_FIELDS`, `JIRA_ASSIGNEE_DISPLAY_MAP`, `JIRA_API_TOKEN`, `JIRA_EMAIL`, `JIRA_REQUEST_TIMEOUT_MS` |
-| Notes         | `NOTES_PASSWORD` (tối thiểu 8 ký tự; để trống thì Notes bị khóa)                                                                                                        |
+| Nhóm          | Biến cấu hình                                                                                                                                                                                                                          |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Web/API       | `PORT`, `HOST`, `ALLOWED_ORIGIN`, `TRUST_CODER_PROXY`, `CODER_ACTOR_HEADER`                                                                                                                                                            |
+| Task database | `TASK_DB_PATH`                                                                                                                                                                                                                         |
+| MySQL         | `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`                                                                                                                                                           |
+| Datastore     | `DATASTORE_EMULATOR_HOST`, `DATASTORE_PROJECT_ID`                                                                                                                                                                                      |
+| Kafka         | `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_UI_INTERNAL_URL`, `KAFKA_UI_OPEN_URL`                                                                                                                                                                |
+| Spanner       | `SPANNER_EMULATOR_HOST`, `SPANNER_PROJECT_ID`, `SPANNER_INSTANCE_ID`, `SPANNER_DATABASE_ID`                                                                                                                                            |
+| Redash        | `REDASH_INTERNAL_URL`, `REDASH_OPEN_URL`                                                                                                                                                                                               |
+| Keycloak      | `KEYCLOAK_INTERNAL_URL`, `KEYCLOAK_OPEN_URL`                                                                                                                                                                                           |
+| MailHog       | `MAILHOG_INTERNAL_URL`, `MAILHOG_OPEN_URL`                                                                                                                                                                                             |
+| BigQuery      | `BIGQUERY_API_ENDPOINT`, `BIGQUERY_PROJECT_ID`                                                                                                                                                                                         |
+| Jira          | `JIRA_TYPE`, `JIRA_BASE_URL`, `JIRA_INTERNAL_URL`, `JIRA_JQL`, `JIRA_ALLOWED_PROJECTS`, `JIRA_CUSTOM_FIELDS`, `JIRA_ASSIGNEE_DISPLAY_MAP`, `JIRA_API_TOKEN`, `JIRA_EMAIL`, `JIRA_REQUEST_TIMEOUT_MS`, `JIRA_FIELD_OPTION_CACHE_TTL_MS` |
+| Notes         | `NOTES_PASSWORD` (tối thiểu 8 ký tự; để trống thì Notes bị khóa)                                                                                                                                                                       |
 
 Notes riêng tư dùng mật khẩu từ môi trường để cấp phiên truy cập 12 giờ. Bật **Mở công khai** cho từng note để người khác xem note đó ngay trong tab Notes mà không cần mật khẩu; chế độ này chỉ xem, không tạo link chia sẻ. Nội dung rich text được làm sạch trước khi render để hạn chế XSS.
 
@@ -174,13 +174,14 @@ JIRA_EMAIL=your-email@example.com
 JIRA_API_TOKEN=<atlassian-api-token>
 JIRA_JQL=project = LOCAL ORDER BY updated DESC
 JIRA_ALLOWED_PROJECTS=LOCAL
-JIRA_CUSTOM_FIELDS=[{"id":"customfield_10043","label":"Sprint","role":"sprint"},{"id":"customfield_10016","label":"Story points","path":"value"},{"id":"customfield_10042","label":"Team","path":"name"}]
+JIRA_CUSTOM_FIELDS=[{"id":"customfield_10000","label":"Epic","role":"epic"},{"id":"customfield_10043","label":"Sprint","role":"sprint"},{"id":"customfield_10016","label":"Story points","path":"value"},{"id":"customfield_10042","label":"Team","path":"name"}]
+JIRA_FIELD_OPTION_CACHE_TTL_MS=900000
 JIRA_ASSIGNEE_DISPLAY_MAP={"A":"ANY"}
 ```
 
 4. Restart API/Control Center. Trong **Jira Workspace → Cấu hình**, chọn Jira Cloud, nhập đúng Base URL/JQL/allowlist, lưu, bấm **Test kết nối trực tiếp**, rồi **Sync Jira**.
 
-`JIRA_INTERNAL_URL` có thể để trống khi backend truy cập được `JIRA_BASE_URL`. `JIRA_CUSTOM_FIELDS` là JSON array, mỗi phần tử có `id` (Jira field ID), `label` (tên hiển thị) và `path` tùy chọn để lấy giá trị bên trong cấu trúc trả về của Jira, ví dụ `value`, `name` hoặc `0.name`. Dùng thêm `role: "sprint"` để ánh xạ custom field vào cột Sprint, Detail và bộ lọc Sprint; nhãn `Sprint` hoặc `sprints` cũng được tự nhận diện. `JIRA_ASSIGNEE_DISPLAY_MAP` là JSON object map tên Jira sang tên chỉ dùng để hiển thị, ví dụ `{"A":"ANY"}`; tên không có trong map giữ nguyên. Có thể khai báo tối đa 30 custom field và cần restart Control Center sau khi đổi biến môi trường. Token chỉ được gửi từ backend khi gọi Jira; frontend và MySQL không nhận token.
+`JIRA_INTERNAL_URL` có thể để trống khi backend truy cập được `JIRA_BASE_URL`. `JIRA_CUSTOM_FIELDS` là JSON array, mỗi phần tử có `id` (Jira field ID), `label` (tên hiển thị) và `path` tùy chọn để lấy giá trị bên trong cấu trúc trả về của Jira, ví dụ `value`, `name` hoặc `0.name`. Dùng `role: "epic"` cho field select chứa option Epic (ví dụ `customfield_10000`): backend tải context/options theo pagination, cache in-memory và ghi option ID vào `parentKey`, text hiển thị vào `parentSummary`. Dùng `role: "sprint"` để ánh xạ custom field vào cột Sprint, Detail và bộ lọc Sprint; nhãn `Sprint` hoặc `sprints` cũng được tự nhận diện. `JIRA_FIELD_OPTION_CACHE_TTL_MS` điều chỉnh TTL cache option, mặc định 15 phút. `JIRA_ASSIGNEE_DISPLAY_MAP` là JSON object map tên Jira sang tên chỉ dùng để hiển thị, ví dụ `{"A":"ANY"}`; tên không có trong map giữ nguyên. Có thể khai báo tối đa 30 custom field và cần restart Control Center sau khi đổi biến môi trường. Token chỉ được gửi từ backend khi gọi Jira; frontend và MySQL không nhận token.
 
 Để chuyển sang Jira khách hàng, đổi `JIRA_TYPE`, `JIRA_BASE_URL`, `JIRA_INTERNAL_URL` và `JIRA_API_TOKEN`; với Jira Cloud đặt thêm `JIRA_EMAIL`. Nếu database Control Center đã tồn tại, cập nhật Base URL, Team JQL và allowlist trong tab **Cấu hình**. Jira Data Center dùng PAT theo Bearer auth; Jira Cloud dùng email + API token theo Basic auth. Token không được nhận hoặc trả về qua API và không được lưu trong MySQL.
 

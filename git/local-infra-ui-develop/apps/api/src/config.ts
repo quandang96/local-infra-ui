@@ -4,8 +4,8 @@ import { z } from 'zod';
 const jiraCustomFieldSchema = z.object({
   id: z.string().trim().min(1).max(120),
   label: z.string().trim().min(1).max(120),
-  // Map this custom field to the built-in Sprint column, filter, and detail.
-  role: z.enum(['sprint']).optional(),
+  // Map this custom field to a built-in Jira workspace field.
+  role: z.enum(['sprint', 'epic']).optional(),
   // Optional dot path for the value inside Jira's field payload, such as
   // "value", "name", or "0.name". Leave blank for the field value itself.
   path: z
@@ -20,10 +20,18 @@ const jiraCustomFieldsSchema = z
   .max(30)
   .superRefine((fields, context) => {
     const ids = new Set<string>();
+    const roles = new Set<string>();
     for (const [index, field] of fields.entries()) {
       if (ids.has(field.id))
         context.addIssue({ code: 'custom', message: `JIRA_CUSTOM_FIELDS trùng id: ${field.id}`, path: [index, 'id'] });
       ids.add(field.id);
+      if (field.role && roles.has(field.role))
+        context.addIssue({
+          code: 'custom',
+          message: `JIRA_CUSTOM_FIELDS trùng role: ${field.role}`,
+          path: [index, 'role'],
+        });
+      if (field.role) roles.add(field.role);
     }
   });
 
@@ -126,6 +134,12 @@ const schema = z.object({
   JIRA_API_TOKEN: z.string().default(''),
   JIRA_EMAIL: z.string().email().optional().or(z.literal('')),
   JIRA_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60_000).default(15_000),
+  JIRA_FIELD_OPTION_CACHE_TTL_MS: z.coerce
+    .number()
+    .int()
+    .min(10_000)
+    .max(86_400_000)
+    .default(15 * 60 * 1000),
   // Notes stay unavailable until a password is explicitly configured.
   NOTES_PASSWORD: z.string().default(''),
 });

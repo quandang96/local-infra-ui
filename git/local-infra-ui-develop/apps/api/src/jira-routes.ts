@@ -3,6 +3,13 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import type { AuditDatabase, JiraCommentInput, JiraIssueInput, JiraSettings, JiraWorklogInput } from './database.js';
+import {
+  getOptionId,
+  JiraFieldOptionService,
+  resolveOptionValue,
+  type JiraFieldContextScope,
+  type JiraOptionValue,
+} from './jira-field-option-service.js';
 
 const metadataBody = z.object({
   reportNote: z.string().max(10_000).default(''),
@@ -73,7 +80,7 @@ function displayCustomFieldValue(value: unknown): string | null {
   if (typeof value === 'string') {
     if (value.includes('com.atlassian.greenhopper.service.sprint.Sprint@')) {
       const match = value.match(/com\.atlassian\.greenhopper\.service\.sprint\.Sprint@[0-9a-f]+\[.*?\bname=([^\],]+)/);
-      return match ? match[1].trim() : null;
+      return match ? match[1].trim() : value;
     }
     return value;
   }
@@ -102,19 +109,22 @@ function worklogReportDays(dateFrom: string, dateTo: string) {
   return days;
 }
 
-function configuredCustomFields(fields: Record<string, any>, config: Config) {
+function configuredCustomFields(
+  fields: Record<string, any>,
+  config: Config,
+  resolvedValues: Record<string, string> = {}
+) {
   const values: Record<string, string> = {};
-  console.debug('Configured Jira custom fields:', config.JIRA_CUSTOM_FIELDS);
-  console.debug('fields:', fields);
   for (const field of config.JIRA_CUSTOM_FIELDS) {
-    const value = displayCustomFieldValue(valueAtPath(fields[field.id], field.path));
-    console.debug(`Custom field ${field.id} (${field.label}) value:`, value);
+    const value = resolvedValues[field.id] ?? displayCustomFieldValue(valueAtPath(fields[field.id], field.path));
     if (value !== null) values[field.id] = value;
   }
   return Object.keys(values).length ? JSON.stringify(values) : null;
 }
 
-function mapIssue(issue: any, syncedAt: string, config: Config): JiraIssueInput {
+type ResolvedEpic = JiraOptionValue & { fieldId: string };
+
+function mapIssue(issue: any, syncedAt: string, config: Config, epic: ResolvedEpic | null = null): JiraIssueInput {
   const fields = issue.fields ?? {};
   const labels = Array.isArray(fields.labels) && fields.labels.length ? JSON.stringify(fields.labels) : null;
   const parent = fields.parent ?? null;
@@ -134,11 +144,11 @@ function mapIssue(issue: any, syncedAt: string, config: Config): JiraIssueInput 
     priority: fields.priority?.name ? String(fields.priority.name) : null,
     sprint: sprintName(fields, config),
     dueDate: fields.duedate ?? fields.customfield_10604 ?? null,
-    parentKey: parent?.key ? String(parent.key) : null,
-    parentSummary: parent?.fields?.summary ? String(parent.fields.summary) : null,
+    parentKey: epic?.id ?? (parent?.key ? String(parent.key) : null),
+    parentSummary: epic?.text ?? (parent?.fields?.summary ? String(parent.fields.summary) : null),
     labels,
     startDate: fields.startDate ?? fields.customfield_10603 ?? null,
-    customFields: configuredCustomFields(fields, config),
+    customFields: configuredCustomFields(fields, config, epic ? { [epic.fieldId]: epic.text } : {}),
     jiraUpdatedAt: String(fields.updated ?? syncedAt),
   };
   return {
@@ -168,6 +178,69 @@ function jiraRequestContext(settings: JiraSettings, config: Config) {
         ? `Basic ${Buffer.from(`${config.JIRA_EMAIL}:${config.JIRA_API_TOKEN}`).toString('base64')}`
         : `Bearer ${config.JIRA_API_TOKEN}`,
   };
+}
+
+function issueIdentity(issue: any) {
+  return String(issue.id ?? issue.key);
+}
+
+async function resolveEpicValues(
+  issues: any[],
+  settings: JiraSettings,
+  config: Config,
+  optionService: JiraFieldOptionService
+): Promise<Map<string, ResolvedEpic>> {
+  const field = config.JIRA_CUSTOM_FIELDS.find((customField) => customField.role === 'epic');
+  if (!field) return new Map();
+
+  const rawValues = new Map<string, unknown>();
+  const scopes = new Map<string, JiraFieldContextScope>();
+  for (const issue of issues) {
+    const fields = issue.fields ?? {};
+    const rawValue = valueAtPath(fields[field.id], field.path);
+    if (!getOptionId(rawValue)) continue;
+    rawValues.set(issueIdentity(issue), rawValue);
+    const scope = {
+      projectId: fields.project?.id ? String(fields.project.id) : undefined,
+      issueTypeId: fields.issuetype?.id ? String(fields.issuetype.id) : undefined,
+    };
+    scopes.set(`${scope.projectId ?? ''}:${scope.issueTypeId ?? ''}`, scope);
+  }
+
+  const optionMaps = new Map<string, Map<string, string>>();
+  if (settings.jiraType === 'cloud' && rawValues.size) {
+    const { baseUrl, authorization } = jiraRequestContext(settings, config);
+    await Promise.all(
+      [...scopes.entries()].map(async ([scopeKey, scope]) => {
+        optionMaps.set(
+          scopeKey,
+          await optionService.getOptionMap(
+            field.id,
+            {
+              baseUrl,
+              authorization,
+              requestTimeoutMs: config.JIRA_REQUEST_TIMEOUT_MS,
+            },
+            scope
+          )
+        );
+      })
+    );
+  }
+
+  const resolved = new Map<string, ResolvedEpic>();
+  for (const issue of issues) {
+    const identity = issueIdentity(issue);
+    const rawValue = rawValues.get(identity);
+    if (rawValue === undefined) continue;
+    const fields = issue.fields ?? {};
+    const scopeKey = `${fields.project?.id ? String(fields.project.id) : ''}:${
+      fields.issuetype?.id ? String(fields.issuetype.id) : ''
+    }`;
+    const value = resolveOptionValue(rawValue, optionMaps.get(scopeKey) ?? new Map());
+    if (value) resolved.set(identity, { ...value, fieldId: field.id });
+  }
+  return resolved;
 }
 
 async function jiraRequestError(response: Response) {
@@ -401,6 +474,7 @@ export function registerJiraRoutes(
   config: Config,
   actorFor: (request: FastifyRequest) => string
 ) {
+  const jiraFieldOptionService = new JiraFieldOptionService({ ttlMs: config.JIRA_FIELD_OPTION_CACHE_TTL_MS });
   let syncInFlight = false;
   const performSync = async (actor: string) => {
     if (syncInFlight)
@@ -416,9 +490,10 @@ export function registerJiraRoutes(
       runRecorded = true;
       const settings = await database.getJiraSettings();
       const sourceIssues = await fetchJiraIssues(settings, config);
+      const epicValues = await resolveEpicValues(sourceIssues, settings, config, jiraFieldOptionService);
       const syncedAt = new Date().toISOString();
       const result = await database.upsertJiraIssues(
-        sourceIssues.map((issue) => mapIssue(issue, syncedAt, config)),
+        sourceIssues.map((issue) => mapIssue(issue, syncedAt, config, epicValues.get(issueIdentity(issue)) ?? null)),
         settings.allowedProjects
       );
       const issueKeys = sourceIssues.map((issue) => String(issue.key));
@@ -428,8 +503,10 @@ export function registerJiraRoutes(
       await database.upsertJiraComments(comments.rows);
       const syncResult = {
         ...result,
-        deletedWorklogs: result.deletedWorklogs + (await database.reconcileJiraWorklogs(worklogs.reconciledIssueKeys, syncedAt)),
-        deletedComments: result.deletedComments + (await database.reconcileJiraComments(comments.reconciledIssueKeys, syncedAt)),
+        deletedWorklogs:
+          result.deletedWorklogs + (await database.reconcileJiraWorklogs(worklogs.reconciledIssueKeys, syncedAt)),
+        deletedComments:
+          result.deletedComments + (await database.reconcileJiraComments(comments.reconciledIssueKeys, syncedAt)),
       };
       await database.finishJiraSyncRun(id, { status: 'succeeded', ...syncResult });
       await database.addJiraAudit(actor, 'jira.sync', 'sync_run', id, null, {
@@ -562,7 +639,10 @@ export function registerJiraRoutes(
           .max(40)
           .default(() => new Date().toISOString().slice(0, 10)),
         authorName: z.string().max(255).optional(),
-        jiraKey: z.string().regex(/^[A-Z][A-Z0-9_]*-\d+$/).optional(),
+        jiraKey: z
+          .string()
+          .regex(/^[A-Z][A-Z0-9_]*-\d+$/)
+          .optional(),
         sprint: z.string().max(255).optional(),
         parentKey: z.string().max(80).optional(),
       })
@@ -575,9 +655,9 @@ export function registerJiraRoutes(
       query.sprint,
       query.parentKey
     );
-    const issueTickets = (await database.listJiraIssues({ q: query.jiraKey, sprint: query.sprint, parentKey: query.parentKey })).map(
-      (issue: any) => String(issue.jiraKey)
-    );
+    const issueTickets = (
+      await database.listJiraIssues({ q: query.jiraKey, sprint: query.sprint, parentKey: query.parentKey })
+    ).map((issue: any) => String(issue.jiraKey));
     const authors = [...new Set((rows as any[]).map((r: any) => String(r.authorName)))].sort();
     const days = worklogReportDays(query.dateFrom, query.dateTo);
     const tickets = [...new Set([...issueTickets, ...(rows as any[]).map((row: any) => String(row.jiraKey))])].sort();
