@@ -71,7 +71,7 @@ const schema = z.object({
     .transform((value) => value === 'true'),
   CODER_ACTOR_HEADER: z.string().default('x-coder-user'),
   // Comma-separated origins permitted to call the API from a different origin.
-  ALLOWED_ORIGIN: z.string().default('http://localhost:5173,http://127.0.0.1:5173'),
+  ALLOWED_ORIGIN: z.string().default('http://localhost:3001,http://127.0.0.1:3001'),
   MYSQL_HOST: z.string().default('localhost'),
   MYSQL_PORT: z.coerce.number().int().positive().default(3306),
   MYSQL_DATABASE: z.string().default('app'),

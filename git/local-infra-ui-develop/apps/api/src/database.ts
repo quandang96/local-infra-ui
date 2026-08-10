@@ -588,7 +588,7 @@ export class AuditDatabase {
   }
 
   async listJiraIssues(
-    filters: { q?: string; status?: string; assignee?: string; priority?: string; sprint?: string } = {}
+    filters: { q?: string; status?: string; assignee?: string; priority?: string; sprint?: string; parentKey?: string } = {}
   ) {
     const where: string[] = [];
     const values: unknown[] = [];
@@ -601,6 +601,7 @@ export class AuditDatabase {
       ['assignee', 'i.assignee_name'],
       ['priority', 'i.priority'],
       ['sprint', 'i.sprint'],
+      ['parentKey', 'i.parent_key'],
     ] as const) {
       if (filters[key]) {
         where.push(`${column} = ?`);
@@ -687,6 +688,9 @@ export class AuditDatabase {
       updated = 0,
       unchanged = 0,
       deleted = 0;
+    let deletedWorklogs = 0,
+      deletedComments = 0,
+      deletedMetadata = 0;
     const connection = await this.pool.getConnection();
     try {
       await connection.beginTransaction();
@@ -739,14 +743,37 @@ export class AuditDatabase {
         const projectPlaceholders = reconciledProjects.map(() => '?').join(', ');
         const issueKeys = issues.map((issue) => issue.jiraKey);
         const keyClause = issueKeys.length ? ` AND jira_key NOT IN (${issueKeys.map(() => '?').join(', ')})` : '';
-        const [deleteResult] = await connection.execute(
-          `DELETE FROM jira_issues WHERE project_key IN (${projectPlaceholders})${keyClause}`,
+        const [staleRows] = await connection.execute<Array<RowDataPacket & { jiraKey: string }>>(
+          `SELECT jira_key AS jiraKey FROM jira_issues WHERE project_key IN (${projectPlaceholders})${keyClause}`,
           [...reconciledProjects, ...issueKeys]
         );
-        deleted = Number((deleteResult as { affectedRows?: number }).affectedRows ?? 0);
+        const staleIssueKeys = staleRows.map((row) => row.jiraKey);
+        if (staleIssueKeys.length) {
+          const stalePlaceholders = staleIssueKeys.map(() => '?').join(', ');
+          const [worklogResult] = await connection.execute(
+            `DELETE FROM jira_worklogs WHERE jira_key IN (${stalePlaceholders})`,
+            staleIssueKeys
+          );
+          const [commentResult] = await connection.execute(
+            `DELETE FROM jira_comments WHERE jira_key IN (${stalePlaceholders})`,
+            staleIssueKeys
+          );
+          const [metadataResult] = await connection.execute(
+            `DELETE FROM jira_task_metadata WHERE jira_key IN (${stalePlaceholders})`,
+            staleIssueKeys
+          );
+          const [issueResult] = await connection.execute(
+            `DELETE FROM jira_issues WHERE jira_key IN (${stalePlaceholders})`,
+            staleIssueKeys
+          );
+          deletedWorklogs = Number((worklogResult as { affectedRows?: number }).affectedRows ?? 0);
+          deletedComments = Number((commentResult as { affectedRows?: number }).affectedRows ?? 0);
+          deletedMetadata = Number((metadataResult as { affectedRows?: number }).affectedRows ?? 0);
+          deleted = Number((issueResult as { affectedRows?: number }).affectedRows ?? 0);
+        }
       }
       await connection.commit();
-      return { created, updated, unchanged, deleted };
+      return { created, updated, unchanged, deleted, deletedWorklogs, deletedComments, deletedMetadata };
     } catch (error) {
       await connection.rollback();
       throw error;
@@ -899,6 +926,26 @@ export class AuditDatabase {
     }
   }
 
+  async reconcileJiraWorklogs(jiraKeys: string[], syncedAt: string) {
+    if (!jiraKeys.length) return 0;
+    const placeholders = jiraKeys.map(() => '?').join(', ');
+    const [result] = await this.pool.execute(
+      `DELETE FROM jira_worklogs WHERE jira_key IN (${placeholders}) AND synced_at <> ?`,
+      [...jiraKeys, syncedAt]
+    );
+    return Number((result as { affectedRows?: number }).affectedRows ?? 0);
+  }
+
+  async reconcileJiraComments(jiraKeys: string[], syncedAt: string) {
+    if (!jiraKeys.length) return 0;
+    const placeholders = jiraKeys.map(() => '?').join(', ');
+    const [result] = await this.pool.execute(
+      `DELETE FROM jira_comments WHERE jira_key IN (${placeholders}) AND synced_at <> ?`,
+      [...jiraKeys, syncedAt]
+    );
+    return Number((result as { affectedRows?: number }).affectedRows ?? 0);
+  }
+
   async listJiraWorklogs(filters: { jiraKey?: string; assignee?: string; dateFrom?: string; dateTo?: string } = {}) {
     const where: string[] = [];
     const values: unknown[] = [];
@@ -939,45 +986,78 @@ export class AuditDatabase {
     return rows;
   }
 
-  async worklogReportByMemberByDay(dateFrom: string, dateTo: string, authorName?: string) {
+  async worklogReportByMemberByDay(
+    dateFrom: string,
+    dateTo: string,
+    authorName?: string,
+    sprint?: string,
+    parentKey?: string
+  ) {
     // Returns rows: { authorName, day (YYYY-MM-DD string), totalSeconds, issueCount }
-    const where = ['started >= ?', 'started <= ?'];
+    const where = ['w.started >= ?', 'w.started <= ?'];
     const values: unknown[] = [dateFrom, dateTo + 'T23:59:59'];
     if (authorName) {
-      where.push('author_name = ?');
+      where.push('w.author_name = ?');
       values.push(authorName);
     }
+    if (sprint) {
+      where.push('i.sprint = ?');
+      values.push(sprint);
+    }
+    if (parentKey) {
+      where.push('i.parent_key = ?');
+      values.push(parentKey);
+    }
     const [rows] = await this.pool.query<TaskRow[]>(
-      `SELECT author_name AS authorName,
-       DATE_FORMAT(started, '%Y-%m-%d') AS day,
-       SUM(time_spent_seconds) AS totalSeconds,
-       COUNT(DISTINCT jira_key) AS issueCount
-       FROM jira_worklogs
+      `SELECT w.author_name AS authorName,
+       DATE_FORMAT(w.started, '%Y-%m-%d') AS day,
+       SUM(w.time_spent_seconds) AS totalSeconds,
+       COUNT(DISTINCT w.jira_key) AS issueCount
+       FROM jira_worklogs w INNER JOIN jira_issues i ON i.jira_key = w.jira_key
        WHERE ${where.join(' AND ')}
-       GROUP BY author_name, DATE_FORMAT(started, '%Y-%m-%d')
-       ORDER BY author_name, day`,
+       GROUP BY w.author_name, DATE_FORMAT(w.started, '%Y-%m-%d')
+       ORDER BY w.author_name, day`,
       values
     );
     return rows;
   }
 
-  async worklogReportByTicket(dateFrom: string, dateTo: string, authorName?: string) {
+  async worklogReportByTicket(
+    dateFrom: string,
+    dateTo: string,
+    authorName?: string,
+    jiraKey?: string,
+    sprint?: string,
+    parentKey?: string
+  ) {
     // Returns rows: { jiraKey, authorName, day (YYYY-MM-DD string), totalSeconds }
-    const where: string[] = ['started >= ?', 'started <= ?'];
+    const where: string[] = ['w.started >= ?', 'w.started <= ?'];
     const values: unknown[] = [dateFrom, dateTo + 'T23:59:59'];
     if (authorName) {
-      where.push('author_name = ?');
+      where.push('w.author_name = ?');
       values.push(authorName);
     }
+    if (jiraKey) {
+      where.push('w.jira_key = ?');
+      values.push(jiraKey);
+    }
+    if (sprint) {
+      where.push('i.sprint = ?');
+      values.push(sprint);
+    }
+    if (parentKey) {
+      where.push('i.parent_key = ?');
+      values.push(parentKey);
+    }
     const [rows] = await this.pool.query<TaskRow[]>(
-      `SELECT jira_key AS jiraKey,
-       author_name AS authorName,
-       DATE_FORMAT(started, '%Y-%m-%d') AS day,
-       SUM(time_spent_seconds) AS totalSeconds
-       FROM jira_worklogs
+      `SELECT w.jira_key AS jiraKey,
+       w.author_name AS authorName,
+       DATE_FORMAT(w.started, '%Y-%m-%d') AS day,
+       SUM(w.time_spent_seconds) AS totalSeconds
+       FROM jira_worklogs w INNER JOIN jira_issues i ON i.jira_key = w.jira_key
        WHERE ${where.join(' AND ')}
-       GROUP BY jira_key, author_name, DATE_FORMAT(started, '%Y-%m-%d')
-       ORDER BY jira_key, author_name, day`,
+       GROUP BY w.jira_key, w.author_name, DATE_FORMAT(w.started, '%Y-%m-%d')
+       ORDER BY w.jira_key, w.author_name, day`,
       values
     );
     return rows;

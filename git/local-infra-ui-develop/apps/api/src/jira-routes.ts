@@ -70,7 +70,14 @@ function valueAtPath(value: unknown, path: string): unknown {
 
 function displayCustomFieldValue(value: unknown): string | null {
   if (value === null || value === undefined) return null;
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (typeof value === 'string') {
+    if (value.includes('com.atlassian.greenhopper.service.sprint.Sprint@')) {
+      const match = value.match(/com\.atlassian\.greenhopper\.service\.sprint\.Sprint@[0-9a-f]+\[.*?\bname=([^\],]+)/);
+      return match ? match[1].trim() : null;
+    }
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   if (Array.isArray(value)) {
     const values = value.map(displayCustomFieldValue).filter((item): item is string => Boolean(item));
     return values.length ? values.join(', ') : null;
@@ -80,6 +87,19 @@ function displayCustomFieldValue(value: unknown): string | null {
     if (typeof node[key] === 'string' || typeof node[key] === 'number') return String(node[key]);
   }
   return plainText(node) ?? JSON.stringify(node);
+}
+
+function worklogReportDays(dateFrom: string, dateTo: string) {
+  const current = new Date(`${dateFrom}T00:00:00Z`);
+  const end = new Date(`${dateTo}T00:00:00Z`);
+  if (Number.isNaN(current.getTime()) || Number.isNaN(end.getTime()) || current > end) return [];
+
+  const days: string[] = [];
+  while (current <= end) {
+    days.push(current.toISOString().slice(0, 10));
+    current.setUTCDate(current.getUTCDate() + 1);
+  }
+  return days;
 }
 
 function configuredCustomFields(fields: Record<string, any>, config: Config) {
@@ -113,16 +133,19 @@ function mapIssue(issue: any, syncedAt: string, config: Config): JiraIssueInput 
     assigneeName: fields.assignee?.displayName ? String(fields.assignee.displayName) : null,
     priority: fields.priority?.name ? String(fields.priority.name) : null,
     sprint: sprintName(fields, config),
-    dueDate: fields.duedate ? String(fields.duedate) : null,
+    dueDate: fields.duedate ?? fields.customfield_10604 ?? null,
     parentKey: parent?.key ? String(parent.key) : null,
     parentSummary: parent?.fields?.summary ? String(parent.fields.summary) : null,
     labels,
-    startDate: fields.startDate ?? fields.customfield_10015 ?? null,
+    startDate: fields.startDate ?? fields.customfield_10603 ?? null,
     customFields: configuredCustomFields(fields, config),
     jiraUpdatedAt: String(fields.updated ?? syncedAt),
-    syncedAt,
   };
-  return { ...mapped, rawHash: createHash('sha256').update(JSON.stringify(mapped)).digest('hex') };
+  return {
+    ...mapped,
+    syncedAt,
+    rawHash: createHash('sha256').update(JSON.stringify(mapped)).digest('hex'),
+  };
 }
 
 function jiraRequestContext(settings: JiraSettings, config: Config) {
@@ -187,7 +210,8 @@ async function fetchJiraIssues(settings: JiraSettings, config: Config) {
     'project',
     'parent',
     'labels',
-    'comment',
+    'customfield_10603',
+    'customfield_10604',
     ...config.JIRA_CUSTOM_FIELDS.map((field) => field.id),
   ];
   // Sprint and start_date are Jira Software custom fields whose IDs differ per site. Discover them.
@@ -261,64 +285,114 @@ async function fetchJiraWorklogs(
   settings: JiraSettings,
   config: Config,
   syncedAt: string
-): Promise<JiraWorklogInput[]> {
+): Promise<{ rows: JiraWorklogInput[]; reconciledIssueKeys: string[] }> {
   const { apiVersion, baseUrl, authorization } = jiraRequestContext(settings, config);
   const CONCURRENCY = 5;
-  const cutoff = new Date(Date.now() - 90 * 86_400_000).toISOString();
   const results: JiraWorklogInput[] = [];
+  const reconciledIssueKeys: string[] = [];
 
   async function fetchOne(key: string) {
     try {
-      const response = await fetch(`${baseUrl}/rest/api/${apiVersion}/issue/${encodeURIComponent(key)}/worklog`, {
-        headers: { accept: 'application/json', authorization },
-        signal: AbortSignal.timeout(config.JIRA_REQUEST_TIMEOUT_MS),
-      });
-      if (!response.ok) return;
-      const payload: any = await response.json();
-      const worklogs: any[] = Array.isArray(payload.worklogs) ? payload.worklogs : [];
-      for (const w of worklogs) {
-        if (!w.started || w.started < cutoff) continue;
-        results.push({
-          id: String(w.id),
-          jiraKey: key,
-          authorName: String(w.author?.displayName ?? w.author?.name ?? 'Unknown'),
-          authorAccountId: w.author?.accountId ? String(w.author.accountId) : null,
-          timeSpentSeconds: Number(w.timeSpentSeconds ?? 0),
-          started: String(w.started),
-          comment: w.comment ? (typeof w.comment === 'string' ? w.comment : plainText(w.comment)) : null,
-          syncedAt,
-        });
+      const worklogs: JiraWorklogInput[] = [];
+      let startAt = 0;
+      for (let page = 0; page < 100; page += 1) {
+        const response = await fetch(
+          `${baseUrl}/rest/api/${apiVersion}/issue/${encodeURIComponent(key)}/worklog?startAt=${startAt}&maxResults=100`,
+          {
+            headers: { accept: 'application/json', authorization },
+            signal: AbortSignal.timeout(config.JIRA_REQUEST_TIMEOUT_MS),
+          }
+        );
+        if (!response.ok) return;
+        const payload: any = await response.json();
+        const pageWorklogs: any[] = Array.isArray(payload.worklogs) ? payload.worklogs : [];
+        for (const worklog of pageWorklogs) {
+          worklogs.push({
+            id: String(worklog.id),
+            jiraKey: key,
+            authorName: String(worklog.author?.displayName ?? worklog.author?.name ?? 'Unknown'),
+            authorAccountId: worklog.author?.accountId ? String(worklog.author.accountId) : null,
+            timeSpentSeconds: Number(worklog.timeSpentSeconds ?? 0),
+            started: String(worklog.started),
+            comment: worklog.comment
+              ? typeof worklog.comment === 'string'
+                ? worklog.comment
+                : plainText(worklog.comment)
+              : null,
+            syncedAt,
+          });
+        }
+        startAt += pageWorklogs.length;
+        const total = Number(payload.total);
+        if (!pageWorklogs.length || payload.isLast === true || (Number.isFinite(total) && startAt >= total)) break;
+        if (page === 99) return;
       }
+      results.push(...worklogs);
+      reconciledIssueKeys.push(key);
     } catch {
-      // worklog fetch failure is non-fatal
+      // Keep existing local rows when Jira cannot provide a complete worklog list.
     }
   }
 
-  // Run with bounded concurrency
   for (let i = 0; i < issueKeys.length; i += CONCURRENCY) {
     await Promise.all(issueKeys.slice(i, i + CONCURRENCY).map(fetchOne));
   }
-  return results;
+  return { rows: results, reconciledIssueKeys };
 }
 
-// Extract comments from issues fetched via search (comment field is included in issue fields)
-function extractComments(issues: any[], syncedAt: string): JiraCommentInput[] {
+async function fetchJiraComments(
+  issueKeys: string[],
+  settings: JiraSettings,
+  config: Config,
+  syncedAt: string
+): Promise<{ rows: JiraCommentInput[]; reconciledIssueKeys: string[] }> {
+  const { apiVersion, baseUrl, authorization } = jiraRequestContext(settings, config);
+  const CONCURRENCY = 5;
   const results: JiraCommentInput[] = [];
-  for (const issue of issues) {
-    const comments: any[] = issue.fields?.comment?.comments ?? [];
-    for (const c of comments) {
-      results.push({
-        id: String(c.id),
-        jiraKey: String(issue.key),
-        authorName: String(c.author?.displayName ?? c.author?.name ?? 'Unknown'),
-        body: c.body ? (typeof c.body === 'string' ? c.body : plainText(c.body)) : null,
-        createdAtJira: String(c.created),
-        updatedAtJira: String(c.updated ?? c.created),
-        syncedAt,
-      });
+  const reconciledIssueKeys: string[] = [];
+
+  async function fetchOne(key: string) {
+    try {
+      const comments: JiraCommentInput[] = [];
+      let startAt = 0;
+      for (let page = 0; page < 100; page += 1) {
+        const response = await fetch(
+          `${baseUrl}/rest/api/${apiVersion}/issue/${encodeURIComponent(key)}/comment?startAt=${startAt}&maxResults=100`,
+          {
+            headers: { accept: 'application/json', authorization },
+            signal: AbortSignal.timeout(config.JIRA_REQUEST_TIMEOUT_MS),
+          }
+        );
+        if (!response.ok) return;
+        const payload: any = await response.json();
+        const pageComments: any[] = Array.isArray(payload.comments) ? payload.comments : [];
+        for (const comment of pageComments) {
+          comments.push({
+            id: String(comment.id),
+            jiraKey: key,
+            authorName: String(comment.author?.displayName ?? comment.author?.name ?? 'Unknown'),
+            body: comment.body ? (typeof comment.body === 'string' ? comment.body : plainText(comment.body)) : null,
+            createdAtJira: String(comment.created),
+            updatedAtJira: String(comment.updated ?? comment.created),
+            syncedAt,
+          });
+        }
+        startAt += pageComments.length;
+        const total = Number(payload.total);
+        if (!pageComments.length || payload.isLast === true || (Number.isFinite(total) && startAt >= total)) break;
+        if (page === 99) return;
+      }
+      results.push(...comments);
+      reconciledIssueKeys.push(key);
+    } catch {
+      // Keep existing local rows when Jira cannot provide a complete comment list.
     }
   }
-  return results;
+
+  for (let i = 0; i < issueKeys.length; i += CONCURRENCY) {
+    await Promise.all(issueKeys.slice(i, i + CONCURRENCY).map(fetchOne));
+  }
+  return { rows: results, reconciledIssueKeys };
 }
 
 export function registerJiraRoutes(
@@ -347,25 +421,28 @@ export function registerJiraRoutes(
         sourceIssues.map((issue) => mapIssue(issue, syncedAt, config)),
         settings.allowedProjects
       );
-      // Sync comments (from embedded field in search results)
-      const comments = extractComments(sourceIssues, syncedAt);
-      await database.upsertJiraComments(comments);
-      // Sync worklogs (requires per-issue API calls)
       const issueKeys = sourceIssues.map((issue) => String(issue.key));
       const worklogs = await fetchJiraWorklogs(issueKeys, settings, config, syncedAt);
-      await database.upsertJiraWorklogs(worklogs);
-      await database.finishJiraSyncRun(id, { status: 'succeeded', ...result });
-      await database.addJiraAudit(actor, 'jira.sync', 'sync_run', id, null, {
+      await database.upsertJiraWorklogs(worklogs.rows);
+      const comments = await fetchJiraComments(issueKeys, settings, config, syncedAt);
+      await database.upsertJiraComments(comments.rows);
+      const syncResult = {
         ...result,
-        worklogs: worklogs.length,
-        comments: comments.length,
+        deletedWorklogs: result.deletedWorklogs + (await database.reconcileJiraWorklogs(worklogs.reconciledIssueKeys, syncedAt)),
+        deletedComments: result.deletedComments + (await database.reconcileJiraComments(comments.reconciledIssueKeys, syncedAt)),
+      };
+      await database.finishJiraSyncRun(id, { status: 'succeeded', ...syncResult });
+      await database.addJiraAudit(actor, 'jira.sync', 'sync_run', id, null, {
+        ...syncResult,
+        worklogs: worklogs.rows.length,
+        comments: comments.rows.length,
       });
       return {
         id,
-        ...result,
+        ...syncResult,
         total: sourceIssues.length,
-        worklogs: worklogs.length,
-        comments: comments.length,
+        worklogs: worklogs.rows.length,
+        comments: comments.rows.length,
         syncedAt,
       };
     } catch (cause: any) {
@@ -485,13 +562,25 @@ export function registerJiraRoutes(
           .max(40)
           .default(() => new Date().toISOString().slice(0, 10)),
         authorName: z.string().max(255).optional(),
+        jiraKey: z.string().regex(/^[A-Z][A-Z0-9_]*-\d+$/).optional(),
+        sprint: z.string().max(255).optional(),
+        parentKey: z.string().max(80).optional(),
       })
       .parse(request.query);
-    const rows = await database.worklogReportByTicket(query.dateFrom, query.dateTo, query.authorName);
-    // Build unique author list and day list
+    const rows = await database.worklogReportByTicket(
+      query.dateFrom,
+      query.dateTo,
+      query.authorName,
+      query.jiraKey,
+      query.sprint,
+      query.parentKey
+    );
+    const issueTickets = (await database.listJiraIssues({ q: query.jiraKey, sprint: query.sprint, parentKey: query.parentKey })).map(
+      (issue: any) => String(issue.jiraKey)
+    );
     const authors = [...new Set((rows as any[]).map((r: any) => String(r.authorName)))].sort();
-    const days = [...new Set((rows as any[]).map((r: any) => String(r.day)))].sort();
-    const tickets = [...new Set((rows as any[]).map((r: any) => String(r.jiraKey)))].sort();
+    const days = worklogReportDays(query.dateFrom, query.dateTo);
+    const tickets = [...new Set([...issueTickets, ...(rows as any[]).map((row: any) => String(row.jiraKey))])].sort();
     // Build matrix: { [jiraKey]: { [authorName]: { [day]: totalSeconds } } }
     const matrix: Record<string, Record<string, Record<string, number>>> = {};
     const ticketTotals: Record<string, number> = {};
@@ -520,12 +609,20 @@ export function registerJiraRoutes(
           .max(40)
           .default(() => new Date().toISOString().slice(0, 10)),
         authorName: z.string().max(255).optional(),
+        sprint: z.string().max(255).optional(),
+        parentKey: z.string().max(80).optional(),
       })
       .parse(request.query);
-    const rows = await database.worklogReportByMemberByDay(query.dateFrom, query.dateTo, query.authorName);
+    const rows = await database.worklogReportByMemberByDay(
+      query.dateFrom,
+      query.dateTo,
+      query.authorName,
+      query.sprint,
+      query.parentKey
+    );
     // Build member list and day list for matrix
     const members = [...new Set(rows.map((r: any) => String(r.authorName)))].sort();
-    const days = [...new Set(rows.map((r: any) => String(r.day)))].sort();
+    const days = worklogReportDays(query.dateFrom, query.dateTo);
     // Build lookup: { [member]: { [day]: totalSeconds } }
     const matrix: Record<string, Record<string, number>> = {};
     for (const row of rows as any[]) {

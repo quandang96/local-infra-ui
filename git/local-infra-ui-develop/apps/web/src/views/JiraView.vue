@@ -105,7 +105,7 @@ const report = ref<Report>({
 });
 const syncRuns = ref<any[]>([]);
 const audits = ref<any[]>([]);
-const filters = reactive({ q: '', status: '', assignee: '', priority: '', sprint: '' });
+const filters = reactive({ q: '', status: '', assignee: '', priority: '', sprint: '', parentKey: '' });
 const boardDueStatus = ref('');
 const dueStatusOptions = [
   { value: 'on-track', label: 'On track', hint: 'Due in 3+ days', icon: 'mdi-circle' },
@@ -124,6 +124,8 @@ const worklogMode = ref<'by-day' | 'by-ticket'>('by-day');
 const wlDateFrom = ref(new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10));
 const wlDateTo = ref(new Date().toISOString().slice(0, 10));
 const wlAuthorFilter = ref('');
+const wlSprintFilter = ref('');
+const wlParentFilter = ref('');
 const wlTicketFilter = ref('');
 const wlTicketSearch = ref('');
 const wlLoading = ref(false);
@@ -158,7 +160,9 @@ const assigneeOptions = computed(() =>
 const priorityOptions = computed(() => unique('priority'));
 const sprintOptions = computed(() => unique('sprint'));
 const parentOptions = computed(() =>
-  [...new Set(issues.value.filter((i) => i.parentKey).map((i) => i.parentKey!))].sort()
+  [...new Map(issues.value.filter((issue) => issue.parentKey).map((issue) => [issue.parentKey!, issue.parentSummary])).entries()]
+    .map(([value, summary]) => ({ value, label: summary ? `${value} · ${summary}` : value }))
+    .sort((first, second) => first.label.localeCompare(second.label))
 );
 const wlTicketOptions = computed(() =>
   [...new Set([...issues.value.map((issue) => issue.jiraKey), ...wlKnownTickets.value])].sort()
@@ -195,7 +199,8 @@ const filteredIssues = computed(() => {
       (!filters.status || issue.status === filters.status) &&
       (!filters.assignee || issue.assigneeName === filters.assignee) &&
       (!filters.priority || issue.priority === filters.priority) &&
-      (!filters.sprint || issue.sprint === filters.sprint)
+      (!filters.sprint || issue.sprint === filters.sprint) &&
+      (!filters.parentKey || issue.parentKey === filters.parentKey)
   );
 });
 const sortedIssues = computed(() => [...filteredIssues.value].sort(compareIssues));
@@ -513,8 +518,10 @@ async function loadActiveWorklog() {
   try {
     if (worklogMode.value === 'by-day') {
       const authorParam = wlAuthorFilter.value ? `&authorName=${encodeURIComponent(wlAuthorFilter.value)}` : '';
+      const sprintParam = wlSprintFilter.value ? `&sprint=${encodeURIComponent(wlSprintFilter.value)}` : '';
+      const parentParam = wlParentFilter.value ? `&parentKey=${encodeURIComponent(wlParentFilter.value)}` : '';
       const data = await api<WorklogReport>(
-        `/jira/worklogs/report?dateFrom=${wlDateFrom.value}&dateTo=${wlDateTo.value}${authorParam}`
+        `/jira/worklogs/report?dateFrom=${wlDateFrom.value}&dateTo=${wlDateTo.value}${authorParam}${sprintParam}${parentParam}`
       );
       wlMemberReport.value = data;
       // populate author list from members
@@ -522,8 +529,10 @@ async function loadActiveWorklog() {
     } else {
       const authorParam = wlAuthorFilter.value ? `&authorName=${encodeURIComponent(wlAuthorFilter.value)}` : '';
       const ticketParam = wlTicketFilter.value ? `&jiraKey=${encodeURIComponent(wlTicketFilter.value)}` : '';
+      const sprintParam = wlSprintFilter.value ? `&sprint=${encodeURIComponent(wlSprintFilter.value)}` : '';
+      const parentParam = wlParentFilter.value ? `&parentKey=${encodeURIComponent(wlParentFilter.value)}` : '';
       const data = await api<WorklogByTicketReport>(
-        `/jira/worklogs/report/by-ticket?dateFrom=${wlDateFrom.value}&dateTo=${wlDateTo.value}${authorParam}${ticketParam}`
+        `/jira/worklogs/report/by-ticket?dateFrom=${wlDateFrom.value}&dateTo=${wlDateTo.value}${authorParam}${ticketParam}${sprintParam}${parentParam}`
       );
       wlByTicketReport.value = data;
       if (data.authors.length) wlKnownAuthors.value = [...data.authors].sort();
@@ -774,6 +783,9 @@ onMounted(loadAll);
               <el-select v-model="filters.sprint" clearable placeholder="Sprint"
                 ><el-option v-for="item in sprintOptions" :key="item" :value="item"
               /></el-select>
+              <el-select v-model="filters.parentKey" clearable placeholder="Parent"
+                ><el-option v-for="item in parentOptions" :key="item.value" :label="item.label" :value="item.value"
+              /></el-select>
             </div>
             <el-table
               class="issues-table"
@@ -851,6 +863,9 @@ onMounted(loadAll);
               ><el-option v-for="item in assigneeOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select
             ><el-select v-model="filters.sprint" clearable placeholder="All sprints"
               ><el-option v-for="item in sprintOptions" :key="item" :value="item"
+            /></el-select>
+            <el-select v-model="filters.parentKey" clearable placeholder="All parents"
+              ><el-option v-for="item in parentOptions" :key="item.value" :label="item.label" :value="item.value"
             /></el-select>
             <el-select v-model="boardDueStatus" clearable placeholder="Due date status">
               <el-option
@@ -1035,6 +1050,24 @@ onMounted(loadAll);
                 size="small"
               >
                 <el-option v-for="a in wlKnownAuthors" :key="a" :label="a" :value="a" />
+              </el-select>
+              <el-select
+                v-model="wlSprintFilter"
+                class="wl-control wl-sprint-select"
+                clearable
+                placeholder="Tất cả Sprint"
+                size="small"
+              >
+                <el-option v-for="sprint in sprintOptions" :key="sprint" :label="sprint" :value="sprint" />
+              </el-select>
+              <el-select
+                v-model="wlParentFilter"
+                class="wl-control wl-parent-select"
+                clearable
+                placeholder="Tất cả Parent"
+                size="small"
+              >
+                <el-option v-for="parent in parentOptions" :key="parent.value" :label="parent.label" :value="parent.value" />
               </el-select>
               <!-- Filter ticket (chỉ hiện khi mode by-ticket) -->
               <el-select
@@ -3018,6 +3051,12 @@ onMounted(loadAll);
 .wl-author-select {
   width: 175px;
 }
+.wl-sprint-select {
+  width: 175px;
+}
+.wl-parent-select {
+  width: 190px;
+}
 .wl-ticket-select {
   width: 190px;
 }
@@ -3052,6 +3091,8 @@ onMounted(loadAll);
   .wl-control,
   .wl-date,
   .wl-author-select,
+  .wl-sprint-select,
+  .wl-parent-select,
   .wl-ticket-select {
     width: 100%;
   }

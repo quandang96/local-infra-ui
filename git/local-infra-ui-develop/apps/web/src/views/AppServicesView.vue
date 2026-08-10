@@ -206,6 +206,10 @@ onMounted(load);
             </el-form-item>
             <el-form-item label="Environment variables (KEY=value, one per line)">
               <el-input v-model="form.envText" type="textarea" :rows="8" placeholder="PORT=8090\nLOG_LEVEL=debug" />
+              <small class="field-hint"
+                >Docker services are available by Compose name (for example <code>mysql:3306</code>,
+                <code>kafka:9094</code>, <code>keycloak:8080</code>). Do not use <code>localhost</code>.</small
+              >
             </el-form-item>
           </el-form>
           <div class="toolbar">
@@ -253,6 +257,10 @@ onMounted(load);
         </el-form-item>
         <el-form-item label="Environment variables (KEY=value, one per line)">
           <el-input v-model="newService.envText" type="textarea" :rows="6" placeholder="PORT=8090\nLOG_LEVEL=debug" />
+          <small class="field-hint"
+            >Use Docker Compose service names, e.g. <code>mysql:3306</code> or <code>kafka:9094</code>, not
+            <code>localhost</code>.</small
+          >
         </el-form-item>
       </el-form>
       <template #footer>
@@ -301,6 +309,13 @@ onMounted(load);
   margin-top: 3px;
   color: var(--muted);
   font-size: 11px;
+}
+.field-hint {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
 }
 .service-form :deep(.el-radio-group) {
   display: flex;
