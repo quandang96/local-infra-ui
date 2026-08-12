@@ -11,6 +11,7 @@ import { AuditDatabase } from './database.js';
 import { Infrastructure } from './infra.js';
 import { registerJiraRoutes } from './jira-routes.js';
 import { registerNotesRoutes } from './notes-routes.js';
+import { ConfluenceMonitor, registerConfluenceMonitorRoutes } from './confluence-monitor.js';
 import { ManagedServiceRunner } from './managed-services.js';
 import { TaskRunner } from './task-runner.js';
 
@@ -30,6 +31,8 @@ await database.initialize({
   syncIntervalMinutes: 30,
   staleDays: 5,
 });
+const confluenceMonitor = new ConfluenceMonitor(config);
+await confluenceMonitor.initialize();
 const infra = new Infrastructure(config);
 const tasks = new TaskRunner(database);
 const app = Fastify({ logger: true, genReqId: () => randomUUID() });
@@ -188,6 +191,9 @@ const actorFor = (request: any) =>
   config.TRUST_CODER_PROXY ? String(request.headers[config.CODER_ACTOR_HEADER] ?? 'local-user') : 'local-user';
 registerJiraRoutes(app, database, config, actorFor);
 registerNotesRoutes(app, database, config, actorFor);
+registerConfluenceMonitorRoutes(app, confluenceMonitor, actorFor);
+confluenceMonitor.startScheduler();
+app.addHook('onClose', async () => confluenceMonitor.close());
 const requireService = (id: string) => {
   const service = infra.getService(id);
   if (!service) throw Object.assign(new Error('Unknown service'), { statusCode: 404, code: 'SERVICE_NOT_FOUND' });

@@ -146,6 +146,7 @@ Các giá trị bên dưới có sẵn trong `.env.example`; thay đổi theo po
 | MailHog       | `MAILHOG_INTERNAL_URL`, `MAILHOG_OPEN_URL`                                                                                                                                                                                             |
 | BigQuery      | `BIGQUERY_API_ENDPOINT`, `BIGQUERY_PROJECT_ID`                                                                                                                                                                                         |
 | Jira          | `JIRA_TYPE`, `JIRA_BASE_URL`, `JIRA_INTERNAL_URL`, `JIRA_JQL`, `JIRA_ALLOWED_PROJECTS`, `JIRA_CUSTOM_FIELDS`, `JIRA_ASSIGNEE_DISPLAY_MAP`, `JIRA_API_TOKEN`, `JIRA_EMAIL`, `JIRA_REQUEST_TIMEOUT_MS`, `JIRA_FIELD_OPTION_CACHE_TTL_MS` |
+| Confluence    | `CONFLUENCE_DEMO_MODE`, `CONFLUENCE_BASE_URL`, `CONFLUENCE_INTERNAL_URL`, `CONFLUENCE_API_TOKEN`, `CONFLUENCE_WEBHOOK_SECRET`, `CONFLUENCE_APP_URL`, `CONFLUENCE_REQUEST_TIMEOUT_MS`, `CONFLUENCE_SYNC_TIMEZONE`                       |
 | Notes         | `NOTES_PASSWORD` (tối thiểu 8 ký tự; để trống thì Notes bị khóa)                                                                                                                                                                       |
 
 Notes riêng tư dùng mật khẩu từ môi trường để cấp phiên truy cập 12 giờ. Bật **Mở công khai** cho từng note để người khác xem note đó ngay trong tab Notes mà không cần mật khẩu; chế độ này chỉ xem, không tạo link chia sẻ. Nội dung rich text được làm sạch trước khi render để hạn chế XSS.
@@ -186,6 +187,14 @@ JIRA_ASSIGNEE_DISPLAY_MAP={"A":"ANY"}
 Để chuyển sang Jira khách hàng, đổi `JIRA_TYPE`, `JIRA_BASE_URL`, `JIRA_INTERNAL_URL` và `JIRA_API_TOKEN`; với Jira Cloud đặt thêm `JIRA_EMAIL`. Nếu database Control Center đã tồn tại, cập nhật Base URL, Team JQL và allowlist trong tab **Cấu hình**. Jira Data Center dùng PAT theo Bearer auth; Jira Cloud dùng email + API token theo Basic auth. Token không được nhận hoặc trả về qua API và không được lưu trong MySQL.
 
 Sync hiện là read-only: Jira giữ status, assignee và workflow; MySQL chỉ giữ cache issue cùng custom field đã cấu hình, report note, internal category, blocker/risk/highlight, lịch sử sync và audit log. CSV export có chặn ký tự mở đầu có thể kích hoạt công thức bảng tính.
+
+## Confluence Monitor
+
+Mặc định `CONFLUENCE_DEMO_MODE=true`: backend seed idempotent rule, page/version, change event và read state trực tiếp vào MySQL. Frontend không chứa mock data; dashboard, bộ lọc, drawer và chuông đều đọc qua API từ database. Trong demo, **Sync ngay** tăng version của một page và ghi change event/sync run mới vào MySQL để trình diễn đầy đủ luồng.
+
+Khi kết nối thật, đặt `CONFLUENCE_DEMO_MODE=false`, tạo Personal Access Token trên Confluence Data Center rồi cấu hình `CONFLUENCE_BASE_URL` và `CONFLUENCE_API_TOKEN`. Để nhận webhook, đặt thêm `CONFLUENCE_WEBHOOK_SECRET` và `CONFLUENCE_APP_URL` là origin mà Confluence truy cập được, restart API, sau đó mở **Confluence Monitor → Theo dõi**, kiểm tra kết nối và bấm **Kích hoạt webhook**.
+
+Rule theo dõi quyết định Space/page được nhận thông báo. Webhook `page_updated` là luồng chính; batch sync chạy mặc định lúc 09:00 và 17:00 theo `CONFLUENCE_SYNC_TIMEZONE`, có thể đổi giờ và giới hạn Space ngay trên UI. Lần sync đầu chỉ tạo baseline version, các lần sau mới ghi thay đổi; cấu hình chọn page sẽ chỉ tải metadata của các page đó. Token và webhook secret chỉ tồn tại ở backend, không được trả về frontend hoặc lưu vào MySQL.
 
 ## Bảo mật và giới hạn
 

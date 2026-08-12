@@ -15,6 +15,7 @@ import EmbeddedUiView from './views/EmbeddedUiView.vue';
 import BigQueryView from './views/BigQueryView.vue';
 import JiraView from './views/JiraView.vue';
 import NotesView from './views/NotesView.vue';
+import ConfluenceMonitorView from './views/ConfluenceMonitorView.vue';
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -54,6 +55,12 @@ export const router = createRouter({
     { path: '/bigquery', name: 'bigquery', component: BigQueryView, meta: { title: 'BigQuery Emulator' } },
     { path: '/jira', name: 'jira', component: JiraView, meta: { title: 'Jira Workspace' } },
     { path: '/notes', name: 'notes', component: NotesView, meta: { title: 'Notes' } },
+    {
+      path: '/confluence-monitor',
+      name: 'confluence-monitor',
+      component: ConfluenceMonitorView,
+      meta: { title: 'Confluence Monitor' },
+    },
     { path: '/tasks', name: 'tasks', component: TasksView, meta: { title: 'Task History' } },
     { path: '/system', name: 'system', component: SystemView, meta: { title: 'System' } },
     { path: '/docker', name: 'docker', component: DockerToolsView, meta: { title: 'Docker Tools' } },
