@@ -148,7 +148,7 @@ async function openNotification(id: number) {
 async function markAllNotificationsRead() {
   try {
     await api('/confluence-monitor/changes/read-all', { method: 'PATCH' });
-    notifications.value.forEach((notification) => (notification.isRead = true));
+    notifications.value = [];
     unreadNotifications.value = 0;
     window.dispatchEvent(new CustomEvent('confluence-notifications-refresh'));
   } catch (cause) {
@@ -283,7 +283,7 @@ onBeforeUnmount(() => {
                 variant="text"
                 color="primary"
                 @click="markAllNotificationsRead"
-                >Đọc tất cả</v-btn
+                >Áp dụng tất cả</v-btn
               >
             </div>
             <div v-if="notifications.length" class="notification-list">

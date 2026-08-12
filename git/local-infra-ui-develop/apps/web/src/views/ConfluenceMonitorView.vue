@@ -6,6 +6,7 @@ import { ElMessage, ElMessageBox } from '../ui';
 
 type Space = { key: string; name: string };
 type PageOption = { id: string; title: string };
+type PageResult = { rows: PageOption[]; nextStart: number; hasMore: boolean };
 type ChangeEvent = {
   id: number;
   pageId: string;
@@ -61,6 +62,14 @@ const rules = ref<Rule[]>([]);
 const pageOptions = ref<PageOption[]>([]);
 const pageLoading = ref(false);
 const pageSearch = ref('');
+const pageNextStart = ref(0);
+const pageHasMore = ref(false);
+const pageQuery = ref('');
+const filterPageOptions = ref<PageOption[]>([]);
+const filterPageLoading = ref(false);
+const filterPageNextStart = ref(0);
+const filterPageHasMore = ref(false);
+const filterPageQuery = ref('');
 const filters = reactive({ status: 'all', spaceKey: '', pageId: '', changedBy: '', dates: [] as string[] });
 const pagination = reactive({ page: 1, limit: 20 });
 const settings = reactive<MonitorSettings>({
@@ -91,10 +100,6 @@ const filterSpaces = computed(() => {
   for (const rule of rules.value) map.set(rule.spaceKey, { key: rule.spaceKey, name: rule.spaceName });
   for (const change of changes.value) map.set(change.spaceKey, { key: change.spaceKey, name: change.spaceName });
   return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
-});
-const filterPages = computed(() => {
-  const map = new Map(changes.value.map((change) => [change.pageId, change.pageTitle]));
-  return [...map].map(([id, title]) => ({ id, title }));
 });
 const filterChangers = computed(() => {
   const map = new Map(changes.value.map((change) => [change.changedByKey, change.changedByName]));
@@ -204,19 +209,24 @@ async function closeDrawer() {
 async function markRead(change = selectedChange.value) {
   if (!change || change.isRead) return;
   await api(`/confluence-monitor/changes/${change.id}/read`, { method: 'PATCH' });
-  change.isRead = true;
-  const row = changes.value.find((item) => item.id === change.id);
-  if (row) row.isRead = true;
+  changes.value = changes.value.filter((item) => item.id !== change.id);
+  total.value = Math.max(0, total.value - 1);
+  await closeDrawer();
+  selectedChange.value = null;
   await loadSummary();
   window.dispatchEvent(new CustomEvent('confluence-notifications-refresh'));
+  ElMessage.success('Đã áp dụng version mới vào dữ liệu chính');
 }
 
 async function markAllRead() {
   await api('/confluence-monitor/changes/read-all', { method: 'PATCH' });
-  changes.value.forEach((change) => (change.isRead = true));
+  changes.value = [];
+  total.value = 0;
+  selectedChange.value = null;
+  drawer.value = false;
   await loadSummary();
   window.dispatchEvent(new CustomEvent('confluence-notifications-refresh'));
-  ElMessage.success('Đã đánh dấu tất cả thông báo là đã đọc');
+  ElMessage.success('Đã áp dụng các version chờ vào dữ liệu chính');
 }
 
 async function manualSync() {
@@ -286,15 +296,83 @@ function resetRuleForm(rule?: Rule) {
 async function searchPages(query = pageSearch.value) {
   if (!ruleForm.spaceKey) return;
   pageLoading.value = true;
+  pageQuery.value = query;
   try {
-    const params = new URLSearchParams({ spaceKey: ruleForm.spaceKey, q: query });
-    const loaded = (await api<{ rows: PageOption[] }>(`/confluence-monitor/pages?${params}`)).rows;
+    const params = new URLSearchParams({ spaceKey: ruleForm.spaceKey, q: query, limit: '1000', start: '0' });
+    const result = await api<PageResult>(`/confluence-monitor/pages?${params}`);
+    const loaded = result.rows;
     const selected = pageOptions.value.filter((page) => ruleForm.pages.includes(page.id));
     pageOptions.value = [...new Map([...selected, ...loaded].map((page) => [page.id, page])).values()];
+    pageNextStart.value = result.nextStart;
+    pageHasMore.value = result.hasMore;
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : 'Không tìm được trang');
   } finally {
     pageLoading.value = false;
+  }
+}
+
+async function loadMorePages() {
+  if (!ruleForm.spaceKey || !pageHasMore.value || pageLoading.value) return;
+  pageLoading.value = true;
+  try {
+    const params = new URLSearchParams({
+      spaceKey: ruleForm.spaceKey,
+      q: pageQuery.value,
+      limit: '1000',
+      start: String(pageNextStart.value),
+    });
+    const result = await api<PageResult>(`/confluence-monitor/pages?${params}`);
+    pageOptions.value = [...new Map([...pageOptions.value, ...result.rows].map((page) => [page.id, page])).values()];
+    pageNextStart.value = result.nextStart;
+    pageHasMore.value = result.hasMore;
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : 'Không tải thêm được trang');
+  } finally {
+    pageLoading.value = false;
+  }
+}
+
+async function searchFilterPages(query = '') {
+  if (!filters.spaceKey) {
+    filterPageOptions.value = [];
+    return;
+  }
+  filterPageLoading.value = true;
+  filterPageQuery.value = query;
+  try {
+    const params = new URLSearchParams({ spaceKey: filters.spaceKey, q: query, limit: '1000', start: '0' });
+    const result = await api<PageResult>(`/confluence-monitor/pages?${params}`);
+    filterPageOptions.value = result.rows;
+    filterPageNextStart.value = result.nextStart;
+    filterPageHasMore.value = result.hasMore;
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : 'Không tìm được trang');
+  } finally {
+    filterPageLoading.value = false;
+  }
+}
+
+async function loadMoreFilterPages() {
+  if (!filters.spaceKey || !filterPageHasMore.value || filterPageLoading.value) return;
+  filterPageLoading.value = true;
+  try {
+    const params = new URLSearchParams({
+      spaceKey: filters.spaceKey,
+      q: filterPageQuery.value,
+      limit: '1000',
+      start: String(filterPageNextStart.value),
+    });
+    const result = await api<PageResult>(`/confluence-monitor/pages?${params}`);
+    filterPageOptions.value = [
+      ...new Map([...filterPageOptions.value, ...result.rows].map((page) => [page.id, page])).values(),
+    ];
+    filterPageNextStart.value = result.nextStart;
+    filterPageHasMore.value = result.hasMore;
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : 'Không tải thêm được trang');
+  } finally {
+    filterPageLoading.value = false;
   }
 }
 
@@ -380,6 +458,8 @@ watch(
     if (!ruleForm.id) {
       ruleForm.pages = [];
       pageOptions.value = [];
+      pageNextStart.value = 0;
+      pageHasMore.value = false;
     }
     if (ruleForm.spaceKey && ruleForm.scopeType === 'SELECTED_PAGES') void searchPages('');
   }
@@ -388,6 +468,16 @@ watch(
   () => ruleForm.scopeType,
   (scope) => {
     if (scope === 'SELECTED_PAGES' && ruleForm.spaceKey) void searchPages('');
+  }
+);
+watch(
+  () => filters.spaceKey,
+  () => {
+    filters.pageId = '';
+    filterPageOptions.value = [];
+    filterPageNextStart.value = 0;
+    filterPageHasMore.value = false;
+    void searchFilterPages();
   }
 );
 watch(
@@ -441,7 +531,7 @@ onMounted(loadWorkspace);
           <span>Theo dõi những cập nhật quan trọng từ các Space đã chọn.</span>
         </div>
         <button v-if="summary.unread" class="read-all" @click="markAllRead">
-          <i class="mdi mdi-check-all" />Đánh dấu tất cả đã đọc
+          <i class="mdi mdi-check-all" />Áp dụng tất cả version chờ
         </button>
       </header>
 
@@ -456,8 +546,8 @@ onMounted(loadWorkspace);
         <article>
           <i class="metric-icon green mdi mdi-check-decagram-outline" />
           <div>
-            <span>Chưa đọc</span><strong>{{ summary.unread }}</strong
-            ><small>Cần bạn xem lại</small>
+            <span>Chờ xác nhận</span><strong>{{ summary.unread }}</strong
+            ><small>Chờ áp dụng vào dữ liệu chính</small>
           </div>
         </article>
         <article>
@@ -479,16 +569,38 @@ onMounted(loadWorkspace);
       <section class="monitor-card change-list-card">
         <div class="filters">
           <el-select v-model="filters.status" aria-label="Trạng thái" @change="applyFilters">
-            <el-option label="Tất cả trạng thái" value="all" /><el-option label="Chưa đọc" value="unread" /><el-option
-              label="Đã đọc"
-              value="read"
-            />
+            <el-option label="Tất cả thay đổi chờ xác nhận" value="all" />
+            <el-option label="Chưa đọc" value="unread" />
           </el-select>
-          <el-select v-model="filters.spaceKey" clearable placeholder="Tất cả Space" @change="applyFilters">
+          <el-select v-model="filters.spaceKey" clearable filterable placeholder="Tất cả Space" @change="applyFilters">
             <el-option v-for="space in filterSpaces" :key="space.key" :label="space.name" :value="space.key" />
           </el-select>
-          <el-select v-model="filters.pageId" clearable filterable placeholder="Tất cả trang" @change="applyFilters">
-            <el-option v-for="page in filterPages" :key="page.id" :label="page.title" :value="page.id" />
+          <el-select
+            v-model="filters.pageId"
+            clearable
+            filterable
+            remote
+            reserve-keyword
+            :disabled="!filters.spaceKey"
+            :loading="filterPageLoading"
+            :remote-method="searchFilterPages"
+            :placeholder="filters.spaceKey ? 'Tìm trang trong Space...' : 'Chọn Space trước'"
+            @change="applyFilters"
+            @visible-change="(visible: boolean) => visible && searchFilterPages()"
+          >
+            <el-option v-for="page in filterPageOptions" :key="page.id" :label="page.title" :value="page.id" />
+            <template #footer>
+              <v-btn
+                v-if="filterPageHasMore"
+                block
+                size="small"
+                variant="text"
+                :loading="filterPageLoading"
+                @click.stop="loadMoreFilterPages"
+              >
+                Tải thêm page
+              </v-btn>
+            </template>
           </el-select>
           <el-select v-model="filters.changedBy" clearable placeholder="Tất cả người" @change="applyFilters">
             <el-option v-for="person in filterChangers" :key="person.key" :label="person.name" :value="person.key" />
@@ -500,9 +612,14 @@ onMounted(loadWorkspace);
             range-separator="→"
             start-placeholder="Từ ngày"
             end-placeholder="Đến ngày"
+            placement="bottom-start"
+            :fallback-placements="['bottom-start']"
             @change="applyFilters"
           />
-          <button class="clear-filter" @click="clearFilters">Xóa lọc</button>
+          <button class="clear-filter" type="button" @click="clearFilters">
+            <i class="mdi mdi-filter-remove-outline" />
+            <span>Xóa lọc</span>
+          </button>
         </div>
 
         <el-table
@@ -555,7 +672,7 @@ onMounted(loadWorkspace);
           <el-table-column label="Trạng thái" width="115"
             ><template #default="{ row }"
               ><span :class="['read-state', { read: row.isRead }]"
-                ><i />{{ row.isRead ? 'Đã đọc' : 'Chưa đọc' }}</span
+                ><i />{{ row.isRead ? 'Đã áp dụng' : 'Chờ xác nhận' }}</span
               ></template
             ></el-table-column
           >
@@ -679,7 +796,9 @@ onMounted(loadWorkspace);
             ><span>Space được sync</span
             ><el-select
               v-model="settings.syncSpaceKeys"
+              class="config-space-select"
               multiple
+              filterable
               collapse-tags
               collapse-tags-tooltip
               placeholder="Chọn Space"
@@ -689,7 +808,12 @@ onMounted(loadWorkspace);
                 :label="space.name"
                 :value="space.key" /></el-select
           ></label>
-          <v-btn color="primary" :loading="savingSettings" @click="saveBatchSettings">Lưu cấu hình</v-btn>
+          <div class="batch-action">
+            <span>Lưu lịch</span>
+            <v-btn class="batch-save" color="primary" :loading="savingSettings" @click="saveBatchSettings"
+              >Lưu cấu hình</v-btn
+            >
+          </div>
         </div>
         <div class="batch-note">
           <i class="mdi mdi-information-outline" /><span
@@ -757,8 +881,8 @@ onMounted(loadWorkspace);
             >Mở Confluence</v-btn
           ><v-btn variant="tonal" :href="historyUrl(selectedChange)" target="_blank">Xem History</v-btn
           ><v-btn v-if="!selectedChange.isRead" variant="outlined" prepend-icon="mdi-check" @click="markRead()"
-            >Đánh dấu đã đọc</v-btn
-          ><span v-else class="drawer-read"><i class="mdi mdi-check-circle" />Đã đọc</span>
+            >Xác nhận và áp dụng</v-btn
+          ><span v-else class="drawer-read"><i class="mdi mdi-check-circle" />Đã áp dụng</span>
         </div>
       </div>
     </el-drawer>
@@ -792,18 +916,44 @@ onMounted(loadWorkspace);
             v-model="ruleForm.pages"
             multiple
             filterable
+            remote
+            reserve-keyword
             :loading="pageLoading"
+            :remote-method="searchPages"
             placeholder="Tìm và chọn page..."
             @visible-change="(visible: boolean) => visible && searchPages()"
-            ><el-option v-for="page in pageOptions" :key="page.id" :label="page.title" :value="page.id" /></el-select
-        ></label>
+            ><el-option v-for="page in pageOptions" :key="page.id" :label="page.title" :value="page.id" />
+            <template #footer>
+              <v-btn
+                v-if="pageHasMore"
+                block
+                size="small"
+                variant="text"
+                :loading="pageLoading"
+                @click.stop="loadMorePages"
+              >
+                Tải thêm page
+              </v-btn>
+            </template></el-select
+          ></label
+        >
         <div v-if="ruleForm.scopeType === 'SELECTED_PAGES'" class="page-search">
           <el-input
             v-model="pageSearch"
             clearable
             placeholder="Nhập tên page để tìm qua Confluence"
             @keyup.enter="searchPages()"
-          /><v-btn size="small" variant="tonal" :loading="pageLoading" @click="searchPages()">Tìm</v-btn>
+          /><v-btn
+            class="page-search-button"
+            size="small"
+            color="primary"
+            variant="flat"
+            prepend-icon="mdi-magnify"
+            :disabled="!ruleForm.spaceKey || pageLoading"
+            :loading="pageLoading"
+            @click="searchPages()"
+            >Tìm page</v-btn
+          >
         </div>
         <div class="form-switch">
           <div><b>Bỏ qua minor edit</b><span>Không tạo thông báo cho chỉnh sửa nhỏ.</span></div>
@@ -854,8 +1004,7 @@ onMounted(loadWorkspace);
   color: var(--muted);
   font-size: 13px;
 }
-.read-all,
-.clear-filter {
+.read-all {
   border: 0;
   background: transparent;
   color: var(--cf-blue);
@@ -869,9 +1018,33 @@ onMounted(loadWorkspace);
   padding: 9px 12px;
   border-radius: 9px;
 }
-.read-all:hover,
-.clear-filter:hover {
+.read-all:hover {
   background: var(--control-hover);
+}
+.clear-filter {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
+  transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+}
+.clear-filter i {
+  color: var(--cf-blue);
+  font-size: 15px;
+}
+.clear-filter:hover {
+  border-color: rgb(37 99 235 / 35%);
+  background: rgb(37 99 235 / 7%);
+  color: var(--cf-blue);
 }
 .last-sync {
   color: var(--muted);
@@ -1286,16 +1459,19 @@ onMounted(loadWorkspace);
 }
 .batch-form {
   display: grid;
-  grid-template-columns: 140px 140px minmax(280px, 1fr) auto;
+  grid-template-columns: minmax(132px, 0.6fr) minmax(132px, 0.6fr) minmax(280px, 1.8fr) auto;
   align-items: end;
-  gap: 14px;
+  gap: 12px;
   padding: 18px;
 }
-.batch-form label {
+.batch-form label,
+.batch-action {
   display: grid;
+  min-width: 0;
   gap: 6px;
 }
 .batch-form label > span,
+.batch-action > span,
 .rule-form label > span,
 fieldset legend {
   color: var(--muted);
@@ -1305,6 +1481,29 @@ fieldset legend {
 .batch-form :deep(.el-select),
 .batch-form :deep(.el-date-editor) {
   width: 100%;
+}
+.batch-form :deep(.el-input__wrapper),
+.batch-form :deep(.el-select__wrapper) {
+  min-height: 36px;
+}
+.batch-action > span {
+  visibility: hidden;
+}
+.batch-save {
+  min-width: 128px;
+  min-height: 36px !important;
+}
+.config-space-select :deep(.el-select__selection) {
+  min-width: 0;
+  overflow: hidden;
+}
+.config-space-select :deep(.el-tag) {
+  max-width: calc(100% - 28px);
+}
+.config-space-select :deep(.el-tag__content) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .batch-note {
   display: flex;
@@ -1456,8 +1655,20 @@ fieldset b {
 .page-search {
   display: grid;
   grid-template-columns: 1fr auto;
+  align-items: center;
   gap: 7px;
   margin-top: -10px;
+}
+.page-search :deep(.el-input__wrapper) {
+  min-height: 34px;
+}
+.page-search-button {
+  min-width: 102px;
+  min-height: 34px !important;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0;
+  text-transform: none;
 }
 .form-switch {
   display: flex;

@@ -101,6 +101,16 @@ function addTable() {
 function removeTable() {
   editor.value?.chain().focus().deleteTable().run();
 }
+
+function addTableColumn(before = false) {
+  const chain = editor.value?.chain().focus();
+  if (!chain) return;
+  (before ? chain.addColumnBefore() : chain.addColumnAfter()).run();
+}
+
+function removeTableColumn() {
+  editor.value?.chain().focus().deleteColumn().run();
+}
 </script>
 
 <template>
@@ -198,6 +208,30 @@ function removeTable() {
         @click="openDialog('Code')"
       />
       <v-btn size="x-small" variant="text" icon="mdi-table" title="Chèn bảng" @click="addTable" />
+      <v-btn
+        size="x-small"
+        variant="text"
+        icon="mdi-table-column-plus-before"
+        title="Thêm cột bên trái"
+        :disabled="!editor.isActive('table')"
+        @click="addTableColumn(true)"
+      />
+      <v-btn
+        size="x-small"
+        variant="text"
+        icon="mdi-table-column-plus-after"
+        title="Thêm cột bên phải"
+        :disabled="!editor.isActive('table')"
+        @click="addTableColumn()"
+      />
+      <v-btn
+        size="x-small"
+        variant="text"
+        icon="mdi-table-column-remove"
+        title="Xóa cột đang chọn"
+        :disabled="!editor.isActive('table')"
+        @click="removeTableColumn"
+      />
       <v-btn
         size="x-small"
         variant="text"
@@ -368,6 +402,9 @@ function removeTable() {
   font-size: 15px;
   line-height: 1.75;
 }
+:deep(.tiptap p) {
+  margin: 0;
+}
 :deep(.tiptap p.is-editor-empty:first-child::before) {
   height: 0;
   float: left;
@@ -459,6 +496,7 @@ function removeTable() {
   margin: 1rem 0;
   border-collapse: collapse;
   table-layout: fixed;
+  cursor: cell;
 }
 :deep(.tiptap th),
 :deep(.tiptap td) {

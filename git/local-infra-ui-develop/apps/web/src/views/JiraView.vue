@@ -105,8 +105,10 @@ const report = ref<Report>({
 });
 const syncRuns = ref<any[]>([]);
 const audits = ref<any[]>([]);
-const filters = reactive({ q: '', status: '', assignee: '', priority: '', sprint: '', parentKey: '' });
+const filters = reactive({ q: '', status: '', assignee: '', priority: '', sprint: [] as string[], parentKey: [] as string[] });
+const issueSprintSearch = ref('');
 const issueParentSearch = ref('');
+const boardSprintSearch = ref('');
 const boardParentSearch = ref('');
 const boardDueStatus = ref('');
 const dueStatusOptions = [
@@ -126,9 +128,11 @@ const worklogMode = ref<'by-day' | 'by-ticket'>('by-day');
 const wlDateFrom = ref(new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10));
 const wlDateTo = ref(new Date().toISOString().slice(0, 10));
 const wlAuthorFilter = ref('');
-const wlSprintFilter = ref('');
-const wlParentFilter = ref('');
+const wlTicketAssigneeFilter = ref('');
+const wlSprintFilter = ref<string[]>([]);
+const wlParentFilter = ref<string[]>([]);
 const wlTicketFilter = ref('');
+const wlSprintSearch = ref('');
 const wlParentSearch = ref('');
 const wlTicketSearch = ref('');
 const wlLoading = ref(false);
@@ -168,7 +172,7 @@ const parentOptions = computed(() =>
       issues.value.filter((issue) => issue.parentKey).map((issue) => [issue.parentKey!, issue.parentSummary])
     ).entries(),
   ]
-    .map(([value, summary]) => ({ value, label: summary || value }))
+    .map(([value, summary]) => ({ value, label: summary ? `${summary} · ${value}` : value }))
     .sort((first, second) => first.label.localeCompare(second.label))
 );
 const wlTicketOptions = computed(() => {
@@ -181,14 +185,24 @@ function matchesDropdownSearch(option: { value: string; label: string }, search:
   const query = search.trim().toLocaleLowerCase();
   return !query || option.value.toLocaleLowerCase().includes(query) || option.label.toLocaleLowerCase().includes(query);
 }
-const filteredWlParentOptions = computed(() =>
-  parentOptions.value.filter((option) => matchesDropdownSearch(option, wlParentSearch.value))
+const sprintOption = (value: string) => ({ value, label: value });
+const filteredIssueSprintOptions = computed(() =>
+  sprintOptions.value.filter((option) => matchesDropdownSearch(sprintOption(option), issueSprintSearch.value))
 );
 const filteredIssueParentOptions = computed(() =>
   parentOptions.value.filter((option) => matchesDropdownSearch(option, issueParentSearch.value))
 );
+const filteredBoardSprintOptions = computed(() =>
+  sprintOptions.value.filter((option) => matchesDropdownSearch(sprintOption(option), boardSprintSearch.value))
+);
 const filteredBoardParentOptions = computed(() =>
   parentOptions.value.filter((option) => matchesDropdownSearch(option, boardParentSearch.value))
+);
+const filteredWlSprintOptions = computed(() =>
+  sprintOptions.value.filter((option) => matchesDropdownSearch(sprintOption(option), wlSprintSearch.value))
+);
+const filteredWlParentOptions = computed(() =>
+  parentOptions.value.filter((option) => matchesDropdownSearch(option, wlParentSearch.value))
 );
 const filteredWlTicketOptions = computed(() =>
   wlTicketOptions.value.filter((option) => matchesDropdownSearch(option, wlTicketSearch.value))
@@ -221,8 +235,8 @@ const filteredIssues = computed(() => {
       (!filters.status || issue.status === filters.status) &&
       (!filters.assignee || issue.assigneeName === filters.assignee) &&
       (!filters.priority || issue.priority === filters.priority) &&
-      (!filters.sprint || issue.sprint === filters.sprint) &&
-      (!filters.parentKey || issue.parentKey === filters.parentKey)
+      (!filters.sprint.length || filters.sprint.includes(issue.sprint || '')) &&
+      (!filters.parentKey.length || filters.parentKey.includes(issue.parentKey || ''))
   );
 });
 const sortedIssues = computed(() => [...filteredIssues.value].sort(compareIssues));
@@ -551,24 +565,19 @@ async function copyEnvTemplate() {
 async function loadActiveWorklog() {
   wlLoading.value = true;
   try {
+    const params = new URLSearchParams({ dateFrom: wlDateFrom.value, dateTo: wlDateTo.value });
+    if (wlAuthorFilter.value) params.set('authorName', wlAuthorFilter.value);
+    for (const sprint of wlSprintFilter.value) params.append('sprint', sprint);
+    for (const parentKey of wlParentFilter.value) params.append('parentKey', parentKey);
     if (worklogMode.value === 'by-day') {
-      const authorParam = wlAuthorFilter.value ? `&authorName=${encodeURIComponent(wlAuthorFilter.value)}` : '';
-      const sprintParam = wlSprintFilter.value ? `&sprint=${encodeURIComponent(wlSprintFilter.value)}` : '';
-      const parentParam = wlParentFilter.value ? `&parentKey=${encodeURIComponent(wlParentFilter.value)}` : '';
-      const data = await api<WorklogReport>(
-        `/jira/worklogs/report?dateFrom=${wlDateFrom.value}&dateTo=${wlDateTo.value}${authorParam}${sprintParam}${parentParam}`
-      );
+      const data = await api<WorklogReport>(`/jira/worklogs/report?${params}`);
       wlMemberReport.value = data;
       // populate author list from members
       if (data.members.length) wlKnownAuthors.value = [...data.members].sort();
     } else {
-      const authorParam = wlAuthorFilter.value ? `&authorName=${encodeURIComponent(wlAuthorFilter.value)}` : '';
-      const ticketParam = wlTicketFilter.value ? `&jiraKey=${encodeURIComponent(wlTicketFilter.value)}` : '';
-      const sprintParam = wlSprintFilter.value ? `&sprint=${encodeURIComponent(wlSprintFilter.value)}` : '';
-      const parentParam = wlParentFilter.value ? `&parentKey=${encodeURIComponent(wlParentFilter.value)}` : '';
-      const data = await api<WorklogByTicketReport>(
-        `/jira/worklogs/report/by-ticket?dateFrom=${wlDateFrom.value}&dateTo=${wlDateTo.value}${authorParam}${ticketParam}${sprintParam}${parentParam}`
-      );
+      if (wlTicketFilter.value) params.set('jiraKey', wlTicketFilter.value);
+      if (wlTicketAssigneeFilter.value) params.set('assignee', wlTicketAssigneeFilter.value);
+      const data = await api<WorklogByTicketReport>(`/jira/worklogs/report/by-ticket?${params}`);
       wlByTicketReport.value = data;
       if (data.authors.length) wlKnownAuthors.value = [...data.authors].sort();
       if (data.tickets.length) wlKnownTickets.value = [...data.tickets].sort();
@@ -824,19 +833,38 @@ onMounted(loadAll);
               <el-select v-model="filters.priority" clearable placeholder="Priority"
                 ><el-option v-for="item in priorityOptions" :key="item" :value="item"
               /></el-select>
-              <el-select v-model="filters.sprint" clearable placeholder="Sprint"
-                ><el-option v-for="item in sprintOptions" :key="item" :value="item"
-              /></el-select>
-              <el-select v-model="filters.parentKey" clearable placeholder="Parent">
+              <el-select
+                v-model="filters.sprint"
+                class="jira-multi-filter jira-sprint-filter"
+                :class="{ 'has-selection': filters.sprint.length > 0 }"
+                clearable
+                filterable
+                multiple
+                collapse-tags
+                collapse-tags-tooltip
+                placeholder="Sprint"
+              >
                 <template #header>
                   <div class="jira-dropdown-search">
-                    <el-input
-                      v-model="issueParentSearch"
-                      clearable
-                      placeholder="Tìm Parent..."
-                      size="small"
-                      @keydown.stop
-                    />
+                    <el-input v-model="issueSprintSearch" clearable placeholder="Tìm Sprint..." size="small" @keydown.stop />
+                  </div>
+                </template>
+                <el-option v-for="item in filteredIssueSprintOptions" :key="item" :value="item"
+              /></el-select>
+              <el-select
+                v-model="filters.parentKey"
+                class="jira-multi-filter jira-parent-filter"
+                :class="{ 'has-selection': filters.parentKey.length > 0 }"
+                clearable
+                filterable
+                multiple
+                collapse-tags
+                collapse-tags-tooltip
+                placeholder="Parent"
+              >
+                <template #header>
+                  <div class="jira-dropdown-search">
+                    <el-input v-model="issueParentSearch" clearable placeholder="Tìm Parent..." size="small" @keydown.stop />
                   </div>
                 </template>
                 <el-option
@@ -927,19 +955,38 @@ onMounted(loadAll);
                 :key="item.value"
                 :label="item.label"
                 :value="item.value" /></el-select
-            ><el-select v-model="filters.sprint" clearable placeholder="All sprints"
-              ><el-option v-for="item in sprintOptions" :key="item" :value="item"
-            /></el-select>
-            <el-select v-model="filters.parentKey" clearable placeholder="All parents">
+            ><el-select
+              v-model="filters.sprint"
+              class="jira-multi-filter jira-sprint-filter"
+              :class="{ 'has-selection': filters.sprint.length > 0 }"
+              clearable
+              filterable
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              placeholder="All sprints"
+            >
               <template #header>
                 <div class="jira-dropdown-search">
-                  <el-input
-                    v-model="boardParentSearch"
-                    clearable
-                    placeholder="Tìm Parent..."
-                    size="small"
-                    @keydown.stop
-                  />
+                  <el-input v-model="boardSprintSearch" clearable placeholder="Tìm Sprint..." size="small" @keydown.stop />
+                </div>
+              </template>
+              <el-option v-for="item in filteredBoardSprintOptions" :key="item" :value="item"
+            /></el-select>
+            <el-select
+              v-model="filters.parentKey"
+              class="jira-multi-filter jira-parent-filter"
+              :class="{ 'has-selection': filters.parentKey.length > 0 }"
+              clearable
+              filterable
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              placeholder="All parents"
+            >
+              <template #header>
+                <div class="jira-dropdown-search">
+                  <el-input v-model="boardParentSearch" clearable placeholder="Tìm Parent..." size="small" @keydown.stop />
                 </div>
               </template>
               <el-option
@@ -1169,30 +1216,50 @@ onMounted(loadAll);
                 <el-option v-for="a in wlKnownAuthors" :key="a" :label="a" :value="a" />
               </el-select>
               <el-select
-                v-model="wlSprintFilter"
-                class="wl-control wl-sprint-select"
+                v-if="worklogMode === 'by-ticket'"
+                v-model="wlTicketAssigneeFilter"
+                class="wl-control wl-ticket-assignee-select"
                 clearable
+                filterable
+                placeholder="Assignee ticket"
+                size="small"
+              >
+                <el-option v-for="assignee in assigneeOptions" :key="assignee.value" :label="assignee.label" :value="assignee.value" />
+              </el-select>
+              <el-select
+                v-model="wlSprintFilter"
+                class="wl-control wl-sprint-select jira-multi-filter"
+                :class="{ 'has-selection': wlSprintFilter.length > 0 }"
+                clearable
+                filterable
+                multiple
+                collapse-tags
+                collapse-tags-tooltip
                 placeholder="Tất cả Sprint"
                 size="small"
               >
-                <el-option v-for="sprint in sprintOptions" :key="sprint" :label="sprint" :value="sprint" />
+                <template #header>
+                  <div class="jira-dropdown-search">
+                    <el-input v-model="wlSprintSearch" clearable placeholder="Tìm Sprint..." size="small" @keydown.stop />
+                  </div>
+                </template>
+                <el-option v-for="sprint in filteredWlSprintOptions" :key="sprint" :label="sprint" :value="sprint" />
               </el-select>
               <el-select
                 v-model="wlParentFilter"
-                class="wl-control wl-parent-select"
+                class="wl-control wl-parent-select jira-multi-filter"
+                :class="{ 'has-selection': wlParentFilter.length > 0 }"
                 clearable
+                filterable
+                multiple
+                collapse-tags
+                collapse-tags-tooltip
                 placeholder="Tất cả Parent"
                 size="small"
               >
                 <template #header>
                   <div class="jira-dropdown-search">
-                    <el-input
-                      v-model="wlParentSearch"
-                      clearable
-                      placeholder="Tìm Parent..."
-                      size="small"
-                      @keydown.stop
-                    />
+                    <el-input v-model="wlParentSearch" clearable placeholder="Tìm Parent..." size="small" @keydown.stop />
                   </div>
                 </template>
                 <el-option
@@ -2118,6 +2185,48 @@ onMounted(loadAll);
   gap: 8px;
   margin-bottom: 14px;
 }
+.jira-multi-filter :deep(.el-select__selection) {
+  min-width: 0;
+  overflow: hidden;
+}
+.jira-multi-filter :deep(.el-tag) {
+  max-width: calc(100% - 28px);
+}
+.jira-multi-filter :deep(.el-tag__content) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jira-sprint-filter,
+.jira-parent-filter {
+  position: relative;
+}
+.jira-sprint-filter:not(.has-selection)::after,
+.jira-parent-filter:not(.has-selection)::after {
+  position: absolute;
+  z-index: 3;
+  top: 50%;
+  right: 30px;
+  left: 12px;
+  overflow: hidden;
+  color: var(--jira-text-muted);
+  font-size: 12px;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+.jira-sprint-filter:not(.has-selection)::after {
+  content: 'Sprint';
+}
+.jira-parent-filter:not(.has-selection)::after {
+  content: 'Parent';
+}
+.jira-sprint-filter:focus-within::after,
+.jira-parent-filter:focus-within::after {
+  display: none;
+}
 .issues-card {
   display: flex;
   flex-direction: column;
@@ -2242,7 +2351,7 @@ onMounted(loadAll);
 }
 .board-pane {
   display: flex;
-  height: calc(100vh - 254px);
+  height: calc(100dvh - 144px);
   min-height: 0;
   flex-direction: column;
 }
@@ -3144,7 +3253,7 @@ onMounted(loadAll);
 }
 .worklog-report-controls {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
   flex-wrap: wrap;
   flex-shrink: 0;
@@ -3334,16 +3443,19 @@ onMounted(loadAll);
   flex: 0 0 auto;
 }
 .wl-date {
-  width: 142px;
+  width: 140px;
 }
 .wl-author-select {
-  width: 175px;
+  width: 150px;
+}
+.wl-ticket-assignee-select {
+  width: 150px;
 }
 .wl-sprint-select {
-  width: 175px;
+  width: 150px;
 }
 .wl-parent-select {
-  width: 190px;
+  width: 180px;
 }
 .wl-ticket-select {
   width: 190px;
@@ -3370,6 +3482,45 @@ onMounted(loadAll);
   font-size: 11px;
   line-height: 32px;
 }
+.wl-controls-bar .jira-multi-filter :deep(.el-select__selected-item) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wl-controls-bar .jira-multi-filter :deep(.el-select__input-wrapper) {
+  min-width: 0;
+}
+.wl-controls-bar .wl-sprint-select,
+.wl-controls-bar .wl-parent-select {
+  position: relative;
+}
+.wl-controls-bar .wl-sprint-select:not(.has-selection)::after,
+.wl-controls-bar .wl-parent-select:not(.has-selection)::after {
+  position: absolute;
+  z-index: 3;
+  top: 50%;
+  right: 28px;
+  left: 9px;
+  overflow: hidden;
+  color: var(--jira-text-muted);
+  font-size: 11px;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+.wl-controls-bar .wl-sprint-select:not(.has-selection)::after {
+  content: 'Tất cả Sprint';
+}
+.wl-controls-bar .wl-parent-select:not(.has-selection)::after {
+  content: 'Tất cả Parent';
+}
+.wl-controls-bar .wl-sprint-select:focus-within::after,
+.wl-controls-bar .wl-parent-select:focus-within::after {
+  display: none;
+}
 .wl-controls-bar :deep(.v-btn.wl-action) {
   min-height: 32px !important;
   height: 32px;
@@ -3379,6 +3530,7 @@ onMounted(loadAll);
   .wl-control,
   .wl-date,
   .wl-author-select,
+  .wl-ticket-assignee-select,
   .wl-sprint-select,
   .wl-parent-select,
   .wl-ticket-select {

@@ -190,11 +190,11 @@ Sync hiện là read-only: Jira giữ status, assignee và workflow; MySQL chỉ
 
 ## Confluence Monitor
 
-Mặc định `CONFLUENCE_DEMO_MODE=true`: backend seed idempotent rule, page/version, change event và read state trực tiếp vào MySQL. Frontend không chứa mock data; dashboard, bộ lọc, drawer và chuông đều đọc qua API từ database. Trong demo, **Sync ngay** tăng version của một page và ghi change event/sync run mới vào MySQL để trình diễn đầy đủ luồng.
+Mặc định `CONFLUENCE_DEMO_MODE=true`: backend seed idempotent rule, page/version và change chờ xác nhận trực tiếp vào MySQL. Frontend không chứa mock data; dashboard, bộ lọc, drawer và chuông đều đọc qua API từ database. Trong demo, **Sync ngay** tăng version của một page và ghi bản thay đổi chờ vào MySQL để trình diễn đầy đủ luồng.
 
 Khi kết nối thật, đặt `CONFLUENCE_DEMO_MODE=false`, tạo Personal Access Token trên Confluence Data Center rồi cấu hình `CONFLUENCE_BASE_URL` và `CONFLUENCE_API_TOKEN`. Để nhận webhook, đặt thêm `CONFLUENCE_WEBHOOK_SECRET` và `CONFLUENCE_APP_URL` là origin mà Confluence truy cập được, restart API, sau đó mở **Confluence Monitor → Theo dõi**, kiểm tra kết nối và bấm **Kích hoạt webhook**.
 
-Rule theo dõi quyết định Space/page được nhận thông báo. Webhook `page_updated` là luồng chính; batch sync chạy mặc định lúc 09:00 và 17:00 theo `CONFLUENCE_SYNC_TIMEZONE`, có thể đổi giờ và giới hạn Space ngay trên UI. Lần sync đầu chỉ tạo baseline version, các lần sau mới ghi thay đổi; cấu hình chọn page sẽ chỉ tải metadata của các page đó. Token và webhook secret chỉ tồn tại ở backend, không được trả về frontend hoặc lưu vào MySQL.
+Rule theo dõi quyết định Space/page được nhận thông báo. Webhook `page_updated` là luồng chính; batch sync chạy mặc định lúc 09:00 và 17:00 theo `CONFLUENCE_SYNC_TIMEZONE`, có thể đổi giờ và giới hạn Space ngay trên UI. Lần sync đầu tải toàn bộ page thuộc Space/rule đã cấu hình vào `confluence_pages` làm bản chính. Các lần sau chỉ so sánh version: version mới được ghi vào `confluence_pending_changes`, không ghi đè bản chính. Khi người dùng chọn **Xác nhận và áp dụng**, hệ thống cập nhật bản chính rồi xóa bản chờ tương ứng. API page nhận `spaceKey`, `q`, `start`, `limit` và trả tối đa 1.000 page mỗi lần gọi; dropdown page hỗ trợ tìm kiếm từ xa. Token và webhook secret chỉ tồn tại ở backend, không được trả về frontend hoặc lưu vào MySQL.
 
 ## Bảo mật và giới hạn
 
