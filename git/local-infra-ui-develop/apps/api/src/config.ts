@@ -140,6 +140,32 @@ const schema = z.object({
     .min(10_000)
     .max(86_400_000)
     .default(15 * 60 * 1000),
+  // Confluence Data Center credentials stay server-side. Monitoring rules,
+  // sync cursors and change notifications are stored in the local MySQL DB.
+  CONFLUENCE_DEMO_MODE: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  CONFLUENCE_BASE_URL: z.string().url().default('https://confluence.example.com'),
+  CONFLUENCE_INTERNAL_URL: z.string().url().optional().or(z.literal('')),
+  CONFLUENCE_API_TOKEN: z.string().default(''),
+  CONFLUENCE_WEBHOOK_SECRET: z.string().default(''),
+  CONFLUENCE_APP_URL: z.string().url().optional().or(z.literal('')),
+  CONFLUENCE_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60_000).default(15_000),
+  CONFLUENCE_SYNC_TIMEZONE: z
+    .string()
+    .trim()
+    .min(1)
+    .max(80)
+    .refine((value) => {
+      try {
+        new Intl.DateTimeFormat('en', { timeZone: value }).format();
+        return true;
+      } catch {
+        return false;
+      }
+    }, 'CONFLUENCE_SYNC_TIMEZONE phải là IANA timezone hợp lệ')
+    .default('Asia/Bangkok'),
   // Notes stay unavailable until a password is explicitly configured.
   NOTES_PASSWORD: z.string().default(''),
 });

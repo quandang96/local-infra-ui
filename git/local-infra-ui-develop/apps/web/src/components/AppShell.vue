@@ -1,20 +1,34 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useDisplay, useTheme } from 'vuetify';
-import { useRoute } from 'vue-router';
-import { post, serviceStatusClass, serviceStatusLabel, type Service } from '../api';
+import { useRoute, useRouter } from 'vue-router';
+import { api, post, serviceStatusClass, serviceStatusLabel, type Service } from '../api';
 import { useInfraStore } from '../stores/infra';
 import { acceptDialog, cancelDialog, dialogState, ElMessage, messageState } from '../ui';
 
 type NavigationItem = { to: string; label: string; icon: string };
 
 const route = useRoute();
+const router = useRouter();
 const infra = useInfraStore();
 const { mobile } = useDisplay();
 const theme = useTheme();
 const drawerOpen = ref(true);
 const menuCollapsed = ref(false);
 const colorMode = ref<'dark' | 'light'>('dark');
+const notificationMenu = ref(false);
+const notifications = ref<
+  Array<{
+    id: number;
+    pageTitle: string;
+    spaceName: string;
+    changedByName: string;
+    changedAt: string;
+    isRead: boolean;
+  }>
+>([]);
+const unreadNotifications = ref(0);
+let notificationTimer: number | undefined;
 const title = computed(() => String(route.meta.title ?? 'Local Infra'));
 const serviceIdForRoute = computed(() =>
   route.name === 'service'
@@ -68,6 +82,7 @@ const navigation: Array<{ label: string; items: NavigationItem[] }> = [
       { to: '/keycloak', label: 'Keycloak', icon: 'mdi-shield-account-outline' },
       { to: '/mailhog', label: 'MailHog', icon: 'mdi-email-outline' },
       { to: '/jira', label: 'Jira Workspace', icon: 'mdi-jira' },
+      { to: '/confluence-monitor', label: 'Confluence Monitor', icon: 'mdi-bell-ring-outline' },
       { to: '/notes', label: 'Notes', icon: 'mdi-notebook-outline' },
       { to: '/docker', label: 'Docker Tools', icon: 'mdi-docker' },
       { to: '/system', label: 'System', icon: 'mdi-server-outline' },
@@ -103,6 +118,44 @@ async function lifecycle(action: 'start' | 'stop' | 'restart') {
   }
 }
 
+async function loadNotifications() {
+  try {
+    const result = await api<{ rows: typeof notifications.value; unread: number }>(
+      '/confluence-monitor/notifications?limit=8'
+    );
+    notifications.value = result.rows;
+    unreadNotifications.value = result.unread;
+  } catch {
+    notifications.value = [];
+    unreadNotifications.value = 0;
+  }
+}
+
+function notificationDate(value: string) {
+  return new Intl.DateTimeFormat('vi-VN', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(value));
+}
+
+async function openNotification(id: number) {
+  notificationMenu.value = false;
+  await router.push({ path: '/confluence-monitor', query: { change: String(id) } });
+}
+
+async function markAllNotificationsRead() {
+  try {
+    await api('/confluence-monitor/changes/read-all', { method: 'PATCH' });
+    notifications.value.forEach((notification) => (notification.isRead = true));
+    unreadNotifications.value = 0;
+    window.dispatchEvent(new CustomEvent('confluence-notifications-refresh'));
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : 'Không cập nhật được thông báo');
+  }
+}
+
 watch(
   mobile,
   (isMobile) => {
@@ -120,6 +173,13 @@ onMounted(() => {
   const savedMode = window.localStorage.getItem('local-infra-color-mode');
   setColorMode(savedMode === 'light' ? 'light' : 'dark');
   infra.refresh();
+  void loadNotifications();
+  window.addEventListener('confluence-notifications-refresh', loadNotifications);
+  notificationTimer = window.setInterval(loadNotifications, 60_000);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener('confluence-notifications-refresh', loadNotifications);
+  if (notificationTimer) window.clearInterval(notificationTimer);
 });
 </script>
 
@@ -194,6 +254,64 @@ onMounted(() => {
           <v-btn size="small" color="error" icon="mdi-stop" title="Stop" @click="lifecycle('stop')" />
           <v-btn size="small" icon="mdi-refresh" title="Refresh" @click="infra.refresh" />
         </div>
+        <v-menu v-model="notificationMenu" location="bottom end" :offset="10" :close-on-content-click="false">
+          <template #activator="{ props }">
+            <v-badge
+              :model-value="unreadNotifications > 0"
+              :content="unreadNotifications > 99 ? '99+' : unreadNotifications"
+              color="error"
+              floating
+            >
+              <v-btn
+                v-bind="props"
+                class="notification-button"
+                size="small"
+                icon="mdi-bell-outline"
+                title="Thông báo Confluence"
+                aria-label="Thông báo Confluence"
+              />
+            </v-badge>
+          </template>
+          <v-card class="notification-popover" rounded="xl" width="380" max-width="calc(100vw - 24px)">
+            <div class="notification-head">
+              <div>
+                <strong>Thông báo</strong><span>{{ unreadNotifications }} chưa đọc</span>
+              </div>
+              <v-btn
+                v-if="unreadNotifications"
+                size="small"
+                variant="text"
+                color="primary"
+                @click="markAllNotificationsRead"
+                >Đọc tất cả</v-btn
+              >
+            </div>
+            <div v-if="notifications.length" class="notification-list">
+              <button
+                v-for="notification in notifications"
+                :key="notification.id"
+                :class="['notification-item', { unread: !notification.isRead }]"
+                @click="openNotification(notification.id)"
+              >
+                <span class="notification-file"><v-icon icon="mdi-file-document-edit-outline" size="18" /></span>
+                <span class="notification-copy">
+                  <b>{{ notification.pageTitle }}</b>
+                  <span>{{ notification.changedByName }} đã cập nhật · {{ notification.spaceName }}</span>
+                  <small>{{ notificationDate(notification.changedAt) }}</small>
+                </span>
+                <i v-if="!notification.isRead" />
+              </button>
+            </div>
+            <div v-else class="notification-empty">
+              <v-icon icon="mdi-bell-check-outline" size="30" />
+              <strong>Chưa có thông báo</strong>
+              <span>Thay đổi Confluence sẽ xuất hiện tại đây.</span>
+            </div>
+            <v-btn block variant="text" color="primary" to="/confluence-monitor" @click="notificationMenu = false">
+              Xem tất cả thay đổi
+            </v-btn>
+          </v-card>
+        </v-menu>
         <v-btn
           class="theme-toggle"
           size="small"
@@ -404,6 +522,108 @@ onMounted(() => {
 }
 .connection-chip {
   font-weight: 700;
+}
+.notification-button {
+  color: var(--muted);
+}
+.notification-popover {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--panel-strong) !important;
+  box-shadow: 0 22px 60px rgb(0 0 0 / 28%) !important;
+}
+.notification-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 15px 16px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.notification-head > div {
+  display: grid;
+  gap: 2px;
+}
+.notification-head strong {
+  color: var(--text);
+  font-size: 14px;
+}
+.notification-head span {
+  color: var(--muted);
+  font-size: 10px;
+}
+.notification-list {
+  max-height: 390px;
+  overflow-y: auto;
+}
+.notification-item {
+  display: grid;
+  width: 100%;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: 10px;
+  padding: 12px 15px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.notification-item:hover,
+.notification-item.unread {
+  background: var(--control-hover);
+}
+.notification-file {
+  display: grid;
+  width: 33px;
+  height: 33px;
+  place-items: center;
+  border-radius: 9px;
+  background: rgb(37 99 235 / 13%);
+  color: #3b82f6;
+}
+.notification-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+.notification-copy b {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.notification-copy span,
+.notification-copy small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+.notification-copy small {
+  color: #568fe9;
+}
+.notification-item > i {
+  width: 7px;
+  height: 7px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: #3b82f6;
+}
+.notification-empty {
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  padding: 32px 20px;
+  color: var(--muted);
+  text-align: center;
+}
+.notification-empty strong {
+  color: var(--text);
+  font-size: 12px;
+}
+.notification-empty span {
+  font-size: 10px;
 }
 .main-content {
   width: min(100%, 1680px);
