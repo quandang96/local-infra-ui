@@ -18,6 +18,11 @@ const metadataBody = z.object({
   highlight: z.boolean().default(false),
   risk: z.boolean().default(false),
 });
+const multiStringQuery = (maxLength: number) =>
+  z.preprocess(
+    (value) => (Array.isArray(value) ? value : value === undefined ? [] : [value]),
+    z.array(z.string().max(maxLength)).max(100)
+  );
 const settingsBody = z.object({
   jiraType: z.enum(['cloud', 'data_center']),
   baseUrl: z
@@ -552,8 +557,8 @@ export function registerJiraRoutes(
         status: z.string().max(100).optional(),
         assignee: z.string().max(255).optional(),
         priority: z.string().max(80).optional(),
-        sprint: z.string().max(255).optional(),
-        parentKey: z.string().max(80).optional(),
+        sprint: multiStringQuery(255),
+        parentKey: multiStringQuery(80),
       })
       .parse(request.query);
     return { rows: await database.listJiraIssues(query) };
@@ -639,12 +644,13 @@ export function registerJiraRoutes(
           .max(40)
           .default(() => new Date().toISOString().slice(0, 10)),
         authorName: z.string().max(255).optional(),
+        assignee: z.string().max(255).optional(),
         jiraKey: z
           .string()
           .regex(/^[A-Z][A-Z0-9_]*-\d+$/)
           .optional(),
-        sprint: z.string().max(255).optional(),
-        parentKey: z.string().max(80).optional(),
+        sprint: multiStringQuery(255),
+        parentKey: multiStringQuery(80),
       })
       .parse(request.query);
     const rows = await database.worklogReportByTicket(
@@ -652,11 +658,17 @@ export function registerJiraRoutes(
       query.dateTo,
       query.authorName,
       query.jiraKey,
+      query.assignee,
       query.sprint,
       query.parentKey
     );
     const issueTickets = (
-      await database.listJiraIssues({ q: query.jiraKey, sprint: query.sprint, parentKey: query.parentKey })
+      await database.listJiraIssues({
+        q: query.jiraKey,
+        assignee: query.assignee,
+        sprint: query.sprint,
+        parentKey: query.parentKey,
+      })
     ).map((issue: any) => String(issue.jiraKey));
     const authors = [...new Set((rows as any[]).map((r: any) => String(r.authorName)))].sort();
     const days = worklogReportDays(query.dateFrom, query.dateTo);
@@ -689,8 +701,8 @@ export function registerJiraRoutes(
           .max(40)
           .default(() => new Date().toISOString().slice(0, 10)),
         authorName: z.string().max(255).optional(),
-        sprint: z.string().max(255).optional(),
-        parentKey: z.string().max(80).optional(),
+        sprint: multiStringQuery(255),
+        parentKey: multiStringQuery(80),
       })
       .parse(request.query);
     const rows = await database.worklogReportByMemberByDay(

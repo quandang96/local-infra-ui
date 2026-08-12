@@ -157,6 +157,27 @@ export class ConfluenceMonitor {
         space_key VARCHAR(255) NOT NULL, current_version INT NOT NULL, checked_at VARCHAR(40) NOT NULL,
         PRIMARY KEY (connection_id, page_id), KEY confluence_state_space (space_key)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `CREATE TABLE IF NOT EXISTS confluence_pages (
+        connection_id TINYINT NOT NULL DEFAULT 1, page_id VARCHAR(80) NOT NULL,
+        page_title VARCHAR(500) NOT NULL, space_key VARCHAR(255) NOT NULL, space_name VARCHAR(255) NOT NULL,
+        current_version INT NOT NULL, changed_by_key VARCHAR(255) NOT NULL, changed_by_name VARCHAR(255) NOT NULL,
+        changed_at VARCHAR(40) NOT NULL, version_message TEXT, minor_edit TINYINT(1) NOT NULL DEFAULT 0,
+        confluence_url VARCHAR(1000) NOT NULL, synced_at VARCHAR(40) NOT NULL,
+        PRIMARY KEY (connection_id, page_id), KEY confluence_pages_space (space_key),
+        KEY confluence_pages_title (page_title(191))
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `CREATE TABLE IF NOT EXISTS confluence_pending_changes (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY, connection_id TINYINT NOT NULL DEFAULT 1,
+        page_id VARCHAR(80) NOT NULL, page_title VARCHAR(500) NOT NULL,
+        space_key VARCHAR(255) NOT NULL, space_name VARCHAR(255) NOT NULL,
+        previous_version INT NOT NULL, current_version INT NOT NULL,
+        changed_by_key VARCHAR(255) NOT NULL, changed_by_name VARCHAR(255) NOT NULL,
+        changed_at VARCHAR(40) NOT NULL, version_message TEXT, minor_edit TINYINT(1) NOT NULL DEFAULT 0,
+        confluence_url VARCHAR(1000) NOT NULL, created_at VARCHAR(40) NOT NULL,
+        UNIQUE KEY confluence_pending_version (connection_id, page_id, current_version),
+        KEY confluence_pending_changed_at (changed_at), KEY confluence_pending_space (space_key),
+        KEY confluence_pending_actor (changed_by_key), KEY confluence_pending_page (page_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       `CREATE TABLE IF NOT EXISTS confluence_monitor_settings (
         id TINYINT PRIMARY KEY, batch_enabled TINYINT(1) NOT NULL DEFAULT 1,
         first_sync_time VARCHAR(5) NOT NULL, second_sync_time VARCHAR(5) NOT NULL,
@@ -242,15 +263,30 @@ export class ConfluenceMonitor {
     const changedAt = this.demoTimestamp(position);
     const confluenceUrl = `https://confluence.demo/pages/viewpage.action?pageId=${encodeURIComponent(pageId)}`;
     await connection.execute(
-      `INSERT INTO confluence_change_events
+      `INSERT IGNORE INTO confluence_pages
+       (connection_id, page_id, page_title, space_key, space_name, current_version,
+        changed_by_key, changed_by_name, changed_at, version_message, minor_edit, confluence_url, synced_at)
+       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        pageId,
+        pageTitle,
+        spaceKey,
+        spaceName,
+        previousVersion,
+        changedByKey,
+        changedByName,
+        changedAt,
+        currentVersion % 2 ? 'Cập nhật nội dung và hướng dẫn sử dụng' : 'Bổ sung thông tin triển khai',
+        minorEdit ? 1 : 0,
+        confluenceUrl,
+        changedAt,
+      ]
+    );
+    await connection.execute(
+      `INSERT IGNORE INTO confluence_pending_changes
        (connection_id, page_id, page_title, space_key, space_name, previous_version, current_version,
         changed_by_key, changed_by_name, changed_at, version_message, minor_edit, confluence_url, created_at)
-       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE page_title = VALUES(page_title), space_key = VALUES(space_key),
-       space_name = VALUES(space_name), changed_by_key = VALUES(changed_by_key),
-       changed_by_name = VALUES(changed_by_name), changed_at = VALUES(changed_at),
-       version_message = VALUES(version_message), minor_edit = VALUES(minor_edit),
-       confluence_url = VALUES(confluence_url)`,
+       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         pageId,
         pageTitle,
@@ -266,12 +302,6 @@ export class ConfluenceMonitor {
         confluenceUrl,
         changedAt,
       ]
-    );
-    await connection.execute(
-      `INSERT INTO confluence_page_states (connection_id, page_id, space_key, current_version, checked_at)
-       VALUES (1, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE space_key = VALUES(space_key),
-       current_version = GREATEST(current_version, VALUES(current_version)), checked_at = VALUES(checked_at)`,
-      [pageId, spaceKey, currentVersion, changedAt]
     );
   }
 
@@ -510,6 +540,8 @@ export class ConfluenceMonitor {
       );
       await connection.execute("DELETE FROM confluence_change_events WHERE page_id LIKE 'demo-%'");
       await connection.execute("DELETE FROM confluence_page_states WHERE page_id LIKE 'demo-%'");
+      await connection.execute("DELETE FROM confluence_pending_changes WHERE page_id LIKE 'demo-%'");
+      await connection.execute("DELETE FROM confluence_pages WHERE page_id LIKE 'demo-%'");
       await connection.execute(
         `DELETE page FROM confluence_monitor_rule_pages page
          INNER JOIN confluence_monitor_rules rule ON rule.id = page.rule_id
@@ -626,7 +658,7 @@ export class ConfluenceMonitor {
     if (this.config.CONFLUENCE_DEMO_MODE) {
       const [rows] = await this.pool.query<Array<RowDataPacket & { key: string; name: string }>>(
         `SELECT space_key AS \`key\`, space_name AS name FROM confluence_monitor_rules
-         UNION SELECT space_key AS \`key\`, space_name AS name FROM confluence_change_events
+         UNION SELECT space_key AS \`key\`, space_name AS name FROM confluence_pages
          ORDER BY name`
       );
       return rows;
@@ -650,26 +682,51 @@ export class ConfluenceMonitor {
     return rows;
   }
 
-  async pages(spaceKey: string, query = '') {
+  async pages(spaceKey: string, query = '', start = 0, requestedLimit = 1000) {
+    const limit = Math.min(Math.max(requestedLimit, 1), 1000);
     if (this.config.CONFLUENCE_DEMO_MODE) {
       const search = `%${query.trim()}%`;
       const [rows] = await this.pool.execute<Array<RowDataPacket & { id: string; title: string }>>(
-        `SELECT page_id AS id, page_title AS title FROM confluence_change_events
+        `SELECT page_id AS id, page_title AS title FROM confluence_pages
          WHERE space_key = ? AND page_title LIKE ?
          UNION SELECT page.page_id AS id, page.page_title AS title
          FROM confluence_monitor_rule_pages page
          INNER JOIN confluence_monitor_rules rule ON rule.id = page.rule_id
          WHERE rule.space_key = ? AND page.page_title LIKE ?
-         ORDER BY title LIMIT 50`,
-        [spaceKey, search, spaceKey, search]
+         ORDER BY title LIMIT ? OFFSET ?`,
+        [spaceKey, search, spaceKey, search, limit + 1, start]
       );
-      return rows;
+      return {
+        rows: rows.slice(0, limit),
+        nextStart: start + Math.min(rows.length, limit),
+        hasMore: rows.length > limit,
+      };
     }
-    const cql = [`type=page`, `space=\"${spaceKey.replace(/[\"\\]/g, '')}\"`];
-    if (query.trim()) cql.push(`title ~ \"${query.trim().replace(/[\"\\]/g, '')}\"`);
-    const params = new URLSearchParams({ cql: cql.join(' AND '), limit: '50' });
-    const data = await this.request<{ results?: ConfluencePage[] }>(`/rest/api/content/search?${params}`);
-    return (data.results ?? []).map((page) => ({ id: String(page.id), title: String(page.title ?? page.id) }));
+    const rows: Array<{ id: string; title: string }> = [];
+    let cursor = start;
+    while (rows.length < limit) {
+      const batchSize = Math.min(100, limit - rows.length);
+      const params = new URLSearchParams({ type: 'page', spaceKey, limit: String(batchSize), start: String(cursor) });
+      let data: { results?: ConfluencePage[]; _links?: { next?: string } };
+      if (query.trim()) {
+        const escapedSpace = spaceKey.replace(/[\"\\]/g, '');
+        const escapedQuery = query.trim().replace(/[\"\\]/g, '');
+        const searchParams = new URLSearchParams({
+          cql: `type=page AND space=\"${escapedSpace}\" AND title ~ \"${escapedQuery}\"`,
+          limit: String(batchSize),
+          start: String(cursor),
+        });
+        data = await this.request(`/rest/api/content/search?${searchParams}`);
+      } else {
+        data = await this.request(`/rest/api/content?${params}`);
+      }
+      const batch = (data.results ?? []).map((page) => ({ id: String(page.id), title: String(page.title ?? page.id) }));
+      rows.push(...batch);
+      cursor += batch.length;
+      if (!data._links?.next && batch.length < batchSize) return { rows, nextStart: cursor, hasMore: false };
+      if (batch.length === 0) return { rows, nextStart: cursor, hasMore: false };
+    }
+    return { rows, nextStart: cursor, hasMore: true };
   }
 
   private async rawRules(enabledOnly = false) {
@@ -812,10 +869,59 @@ export class ConfluenceMonitor {
 
   private async currentState(pageId: string) {
     const [rows] = await this.pool.execute<Array<RowDataPacket & { currentVersion: number }>>(
-      'SELECT current_version AS currentVersion FROM confluence_page_states WHERE connection_id = 1 AND page_id = ?',
+      'SELECT current_version AS currentVersion FROM confluence_pages WHERE connection_id = 1 AND page_id = ?',
       [pageId]
     );
     return rows[0]?.currentVersion;
+  }
+
+  private pageValues(page: ConfluencePage) {
+    const actor = pageActor(page);
+    const base = String(page._links?.base ?? this.publicBaseUrl).replace(/\/+$/, '');
+    const webui = String(page._links?.webui ?? '');
+    return {
+      pageId: String(page.id ?? ''),
+      pageTitle: String(page.title ?? page.id ?? ''),
+      spaceKey: String(page.space?.key ?? ''),
+      spaceName: String(page.space?.name ?? page.space?.key ?? ''),
+      currentVersion: Number(page.version?.number ?? 0),
+      changedByKey: actor.key,
+      changedByName: actor.name,
+      changedAt: String(page.version?.when ?? new Date().toISOString()),
+      versionMessage: String(page.version?.message ?? ''),
+      minorEdit: Boolean(page.version?.minorEdit),
+      confluenceUrl: webui.startsWith('http') ? webui : `${base}${webui}`,
+    };
+  }
+
+  private async saveApprovedPage(page: ConfluencePage) {
+    const value = this.pageValues(page);
+    const syncedAt = new Date().toISOString();
+    await this.pool.execute(
+      `INSERT INTO confluence_pages
+       (connection_id, page_id, page_title, space_key, space_name, current_version,
+        changed_by_key, changed_by_name, changed_at, version_message, minor_edit, confluence_url, synced_at)
+       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE page_title = VALUES(page_title), space_key = VALUES(space_key),
+       space_name = VALUES(space_name), current_version = VALUES(current_version),
+       changed_by_key = VALUES(changed_by_key), changed_by_name = VALUES(changed_by_name),
+       changed_at = VALUES(changed_at), version_message = VALUES(version_message),
+       minor_edit = VALUES(minor_edit), confluence_url = VALUES(confluence_url), synced_at = VALUES(synced_at)`,
+      [
+        value.pageId,
+        value.pageTitle,
+        value.spaceKey,
+        value.spaceName,
+        value.currentVersion,
+        value.changedByKey,
+        value.changedByName,
+        value.changedAt,
+        value.versionMessage,
+        value.minorEdit ? 1 : 0,
+        value.confluenceUrl,
+        syncedAt,
+      ]
+    );
   }
 
   private async savePage(
@@ -830,43 +936,43 @@ export class ConfluenceMonitor {
     const currentVersion = Number(page.version?.number ?? 0);
     if (!Number.isInteger(currentVersion) || currentVersion < 1) return false;
     const previousState = await this.currentState(pageId);
-    const now = new Date().toISOString();
-    await this.pool.execute(
-      `INSERT INTO confluence_page_states (connection_id, page_id, space_key, current_version, checked_at)
-       VALUES (1, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE space_key = VALUES(space_key),
-       current_version = VALUES(current_version), checked_at = VALUES(checked_at)`,
-      [pageId, spaceKey, currentVersion, now]
-    );
-    if (!createChange || previousState === undefined || currentVersion <= previousState) return false;
+    if (!createChange || previousState === undefined) {
+      await this.saveApprovedPage(page);
+      return false;
+    }
+    if (currentVersion <= previousState) return false;
     const minorEdit = Boolean(page.version?.minorEdit);
-    if (minorEdit && matching.every((rule) => rule.ignoreMinorEdit)) return false;
-    return this.insertChange(page, previousState);
+    if (minorEdit && matching.every((rule) => rule.ignoreMinorEdit)) {
+      const [pending] = await this.pool.execute<Array<RowDataPacket & { count: number }>>(
+        'SELECT COUNT(*) AS count FROM confluence_pending_changes WHERE connection_id = 1 AND page_id = ?',
+        [pageId]
+      );
+      if (!Number(pending[0]?.count)) await this.saveApprovedPage(page);
+      return false;
+    }
+    return this.insertPendingChange(page, previousState);
   }
 
-  private async insertChange(page: ConfluencePage, previousVersion?: number) {
-    const currentVersion = Number(page.version?.number ?? 0);
-    const pageId = String(page.id ?? '');
-    const actor = pageActor(page);
-    const base = String(page._links?.base ?? this.publicBaseUrl).replace(/\/+$/, '');
-    const webui = String(page._links?.webui ?? '');
+  private async insertPendingChange(page: ConfluencePage, previousVersion: number) {
+    const value = this.pageValues(page);
     const [result] = await this.pool.execute<mysql.ResultSetHeader>(
-      `INSERT IGNORE INTO confluence_change_events
+      `INSERT IGNORE INTO confluence_pending_changes
        (connection_id, page_id, page_title, space_key, space_name, previous_version, current_version,
         changed_by_key, changed_by_name, changed_at, version_message, minor_edit, confluence_url, created_at)
        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        pageId,
-        String(page.title ?? pageId),
-        String(page.space?.key ?? ''),
-        String(page.space?.name ?? page.space?.key ?? ''),
-        previousVersion ?? Math.max(0, currentVersion - 1),
-        currentVersion,
-        actor.key,
-        actor.name,
-        String(page.version?.when ?? new Date().toISOString()),
-        String(page.version?.message ?? ''),
-        page.version?.minorEdit ? 1 : 0,
-        webui.startsWith('http') ? webui : `${base}${webui}`,
+        value.pageId,
+        value.pageTitle,
+        value.spaceKey,
+        value.spaceName,
+        previousVersion,
+        value.currentVersion,
+        value.changedByKey,
+        value.changedByName,
+        value.changedAt,
+        value.versionMessage,
+        value.minorEdit ? 1 : 0,
+        value.confluenceUrl,
         new Date().toISOString(),
       ]
     );
@@ -908,20 +1014,12 @@ export class ConfluenceMonitor {
     const page = await this.contentPage(pageId);
     const matching = rules.filter((rule) => rule.spaceKey === page.space?.key && this.matchesRule(rule, pageId));
     if (!matching.length) return { accepted: true, ignored: 'rule' };
-    const previous = await this.currentState(pageId);
-    await this.pool.execute(
-      `INSERT INTO confluence_page_states (connection_id, page_id, space_key, current_version, checked_at)
-       VALUES (1, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE space_key = VALUES(space_key),
-       current_version = VALUES(current_version), checked_at = VALUES(checked_at)`,
-      [pageId, String(page.space?.key ?? ''), Number(page.version?.number ?? 0), new Date().toISOString()]
-    );
-    const ignoredMinor = Boolean(page.version?.minorEdit) && matching.every((rule) => rule.ignoreMinorEdit);
-    const created = ignoredMinor ? false : await this.insertChange(page, previous);
+    const created = await this.savePage(page, true, rules);
     await this.pool.execute(
       "UPDATE confluence_connections SET webhook_status = 'active', last_webhook_at = ?, last_error = NULL WHERE id = 1",
       [new Date().toISOString()]
     );
-    return { accepted: true, created, ignored: ignoredMinor ? 'minor_edit' : undefined };
+    return { accepted: true, created };
   }
 
   private async scanSpace(spaceKey: string, rules: Awaited<ReturnType<ConfluenceMonitor['rawRules']>>) {
@@ -982,13 +1080,13 @@ export class ConfluenceMonitor {
         }
       >
     >(
-      `SELECT state.page_id AS pageId, event.page_title AS pageTitle, state.space_key AS spaceKey,
-       event.space_name AS spaceName, state.current_version AS currentVersion,
-       event.confluence_url AS confluenceUrl
-       FROM confluence_page_states state
-       INNER JOIN confluence_change_events event ON event.page_id = state.page_id
-        AND event.current_version = state.current_version
-       ORDER BY state.checked_at, state.page_id`
+      `SELECT page.page_id AS pageId, page.page_title AS pageTitle, page.space_key AS spaceKey,
+       page.space_name AS spaceName,
+       GREATEST(page.current_version, COALESCE((SELECT MAX(pending.current_version)
+        FROM confluence_pending_changes pending
+        WHERE pending.connection_id = page.connection_id AND pending.page_id = page.page_id), 0)) AS currentVersion,
+       page.confluence_url AS confluenceUrl
+       FROM confluence_pages page ORDER BY page.synced_at, page.page_id`
     );
     const target = rows.find((row) => spaceKeys.includes(row.spaceKey));
     if (!target)
@@ -1006,7 +1104,7 @@ export class ConfluenceMonitor {
     ];
     const person = people[currentVersion % people.length];
     const now = new Date().toISOString();
-    const created = await this.insertChange(
+    const created = await this.insertPendingChange(
       {
         id: target.pageId,
         title: target.pageTitle,
@@ -1021,11 +1119,6 @@ export class ConfluenceMonitor {
         _links: { webui: target.confluenceUrl },
       },
       target.currentVersion
-    );
-    await this.pool.execute(
-      `UPDATE confluence_page_states SET current_version = ?, checked_at = ?
-       WHERE connection_id = 1 AND page_id = ?`,
-      [currentVersion, now, target.pageId]
     );
     const id = randomUUID();
     await this.pool.execute(
@@ -1105,12 +1198,10 @@ export class ConfluenceMonitor {
   }
 
   async changes(actor: string, input: unknown) {
-    await this.ensureDemoReadStates(actor);
     const query = changesQuery.parse(input);
     const where: string[] = [];
-    const values: unknown[] = [actor];
-    if (query.status === 'unread') where.push('read_state.id IS NULL');
-    if (query.status === 'read') where.push('read_state.id IS NOT NULL');
+    const values: unknown[] = [];
+    if (query.status === 'read') where.push('1 = 0');
     if (query.spaceKey) {
       where.push('event.space_key = ?');
       values.push(query.spaceKey);
@@ -1133,8 +1224,7 @@ export class ConfluenceMonitor {
     }
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const [countRows] = await this.pool.query<Array<RowDataPacket & { total: number }>>(
-      `SELECT COUNT(*) AS total FROM confluence_change_events event
-       LEFT JOIN confluence_change_read_states read_state ON read_state.change_event_id = event.id AND read_state.user_id = ? ${clause}`,
+      `SELECT COUNT(*) AS total FROM confluence_pending_changes event ${clause}`,
       values
     );
     const [rows] = await this.pool.query<Array<RowDataPacket & Record<string, unknown>>>(
@@ -1144,9 +1234,8 @@ export class ConfluenceMonitor {
        event.changed_by_key AS changedByKey, event.changed_by_name AS changedByName,
        event.changed_at AS changedAt, event.version_message AS versionMessage,
        event.minor_edit AS minorEdit, event.confluence_url AS confluenceUrl,
-       IF(read_state.id IS NULL, 0, 1) AS isRead
-       FROM confluence_change_events event
-       LEFT JOIN confluence_change_read_states read_state ON read_state.change_event_id = event.id AND read_state.user_id = ?
+       0 AS isRead
+       FROM confluence_pending_changes event
        ${clause} ORDER BY event.changed_at DESC LIMIT ? OFFSET ?`,
       [...values, query.limit, (query.page - 1) * query.limit]
     );
@@ -1159,18 +1248,14 @@ export class ConfluenceMonitor {
   }
 
   async summary(actor: string) {
-    await this.ensureDemoReadStates(actor);
     const [rows] = await this.pool.execute<Array<RowDataPacket & Record<string, number>>>(
       `SELECT COUNT(*) AS todayChanges,
        COUNT(DISTINCT event.page_id) AS changedPages,
        COUNT(DISTINCT event.changed_by_key) AS changers,
-       (SELECT COUNT(*) FROM confluence_change_events all_event
-        LEFT JOIN confluence_change_read_states all_read_state
-          ON all_read_state.change_event_id = all_event.id AND all_read_state.user_id = ?
-        WHERE all_read_state.id IS NULL) AS unread
-       FROM confluence_change_events event
+       (SELECT COUNT(*) FROM confluence_pending_changes) AS unread
+       FROM confluence_pending_changes event
        WHERE event.changed_at >= ?`,
-      [actor, dayStartIso()]
+      [dayStartIso()]
     );
     const row = rows[0] ?? {};
     return {
@@ -1182,7 +1267,6 @@ export class ConfluenceMonitor {
   }
 
   async change(id: number, actor: string) {
-    await this.ensureDemoReadStates(actor);
     const [rows] = await this.pool.execute<Array<RowDataPacket & Record<string, unknown>>>(
       `SELECT event.id, event.page_id AS pageId, event.page_title AS pageTitle,
        event.space_key AS spaceKey, event.space_name AS spaceName,
@@ -1190,52 +1274,101 @@ export class ConfluenceMonitor {
        event.changed_by_key AS changedByKey, event.changed_by_name AS changedByName,
        event.changed_at AS changedAt, event.version_message AS versionMessage,
        event.minor_edit AS minorEdit, event.confluence_url AS confluenceUrl,
-       IF(read_state.id IS NULL, 0, 1) AS isRead
-       FROM confluence_change_events event
-       LEFT JOIN confluence_change_read_states read_state ON read_state.change_event_id = event.id AND read_state.user_id = ?
+       0 AS isRead
+       FROM confluence_pending_changes event
        WHERE event.id = ?`,
-      [actor, id]
+      [id]
     );
     const row = rows[0];
     if (!row) throw Object.assign(new Error('Không tìm thấy thay đổi'), { statusCode: 404 });
     return { ...row, minorEdit: asBoolean(row.minorEdit), isRead: asBoolean(row.isRead) };
   }
 
-  async markRead(id: number, actor: string) {
-    await this.pool.execute(
-      `INSERT IGNORE INTO confluence_change_read_states (change_event_id, user_id, read_at)
-       SELECT id, ?, ? FROM confluence_change_events WHERE id = ?`,
-      [actor, new Date().toISOString(), id]
+  private async acceptPendingChange(connection: PoolConnection, change: RowDataPacket & Record<string, unknown>) {
+    await connection.execute(
+      `INSERT INTO confluence_pages
+       (connection_id, page_id, page_title, space_key, space_name, current_version,
+        changed_by_key, changed_by_name, changed_at, version_message, minor_edit, confluence_url, synced_at)
+       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE page_title = VALUES(page_title), space_key = VALUES(space_key),
+       space_name = VALUES(space_name), current_version = VALUES(current_version),
+       changed_by_key = VALUES(changed_by_key), changed_by_name = VALUES(changed_by_name),
+       changed_at = VALUES(changed_at), version_message = VALUES(version_message),
+       minor_edit = VALUES(minor_edit), confluence_url = VALUES(confluence_url), synced_at = VALUES(synced_at)`,
+      [
+        String(change.pageId),
+        String(change.pageTitle),
+        String(change.spaceKey),
+        String(change.spaceName),
+        Number(change.currentVersion),
+        String(change.changedByKey),
+        String(change.changedByName),
+        String(change.changedAt),
+        String(change.versionMessage ?? ''),
+        asBoolean(change.minorEdit) ? 1 : 0,
+        String(change.confluenceUrl),
+        new Date().toISOString(),
+      ]
     );
-    return { id, isRead: true };
+    const [deleted] = await connection.execute<mysql.ResultSetHeader>(
+      `DELETE FROM confluence_pending_changes
+       WHERE connection_id = 1 AND page_id = ? AND current_version <= ?`,
+      [String(change.pageId), Number(change.currentVersion)]
+    );
+    return deleted.affectedRows;
   }
 
-  async markAllRead(actor: string) {
-    const [result] = await this.pool.execute<mysql.ResultSetHeader>(
-      `INSERT IGNORE INTO confluence_change_read_states (change_event_id, user_id, read_at)
-       SELECT id, ?, ? FROM confluence_change_events`,
-      [actor, new Date().toISOString()]
-    );
-    return { updated: result.affectedRows };
+  async markRead(id: number, _actor: string) {
+    const connection = await this.pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [rows] = await connection.execute<Array<RowDataPacket & Record<string, unknown>>>(
+        `SELECT id, page_id AS pageId, page_title AS pageTitle, space_key AS spaceKey, space_name AS spaceName,
+         current_version AS currentVersion, changed_by_key AS changedByKey, changed_by_name AS changedByName,
+         changed_at AS changedAt, version_message AS versionMessage, minor_edit AS minorEdit,
+         confluence_url AS confluenceUrl FROM confluence_pending_changes WHERE id = ? FOR UPDATE`,
+        [id]
+      );
+      if (!rows[0]) throw Object.assign(new Error('Thay đổi đã được áp dụng hoặc không tồn tại'), { statusCode: 404 });
+      const applied = await this.acceptPendingChange(connection, rows[0]);
+      await connection.commit();
+      return { id, isRead: true, applied };
+    } catch (cause) {
+      await connection.rollback();
+      throw cause;
+    } finally {
+      connection.release();
+    }
+  }
+
+  async markAllRead(_actor: string) {
+    const connection = await this.pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [rows] = await connection.query<Array<RowDataPacket & Record<string, unknown>>>(
+        `SELECT id, page_id AS pageId, page_title AS pageTitle, space_key AS spaceKey, space_name AS spaceName,
+         current_version AS currentVersion, changed_by_key AS changedByKey, changed_by_name AS changedByName,
+         changed_at AS changedAt, version_message AS versionMessage, minor_edit AS minorEdit,
+         confluence_url AS confluenceUrl FROM confluence_pending_changes ORDER BY page_id, current_version DESC FOR UPDATE`
+      );
+      const latestByPage = new Map<string, RowDataPacket & Record<string, unknown>>();
+      for (const row of rows) if (!latestByPage.has(String(row.pageId))) latestByPage.set(String(row.pageId), row);
+      let updated = 0;
+      for (const row of latestByPage.values()) updated += await this.acceptPendingChange(connection, row);
+      await connection.commit();
+      return { updated };
+    } catch (cause) {
+      await connection.rollback();
+      throw cause;
+    } finally {
+      connection.release();
+    }
   }
 
   async notifications(actor: string, limit = 8) {
     const changes = await this.changes(actor, { status: 'all', page: 1, limit: Math.min(20, limit) });
     const summary = await this.summary(actor);
     return { rows: changes.rows, unread: summary.unread };
-  }
-
-  private async ensureDemoReadStates(actor: string) {
-    if (!this.config.CONFLUENCE_DEMO_MODE) return;
-    await this.pool.execute(
-      `INSERT IGNORE INTO confluence_change_read_states (change_event_id, user_id, read_at)
-       SELECT id, ?, ? FROM confluence_change_events
-       WHERE (page_id = 'demo-1001' AND current_version = 18)
-          OR (page_id = 'demo-1004' AND current_version = 5)
-          OR (page_id = 'demo-1005' AND current_version = 11)
-          OR (page_id = 'demo-1006' AND current_version = 7)`,
-      [actor, new Date().toISOString()]
-    );
   }
 
   private localSlot(now = new Date()) {
@@ -1293,9 +1426,14 @@ export function registerConfluenceMonitorRoutes(app: FastifyInstance, monitor: C
   });
   app.get('/api/confluence-monitor/pages', async (request) => {
     const query = z
-      .object({ spaceKey: z.string().min(1).max(255), q: z.string().max(200).default('') })
+      .object({
+        spaceKey: z.string().min(1).max(255),
+        q: z.string().max(200).default(''),
+        start: z.coerce.number().int().min(0).default(0),
+        limit: z.coerce.number().int().min(1).max(1000).default(1000),
+      })
       .parse(request.query);
-    return { rows: await monitor.pages(query.spaceKey, query.q) };
+    return monitor.pages(query.spaceKey, query.q, query.start, query.limit);
   });
   app.get('/api/confluence-monitor/rules', async () => ({ rows: await monitor.rules() }));
   app.post('/api/confluence-monitor/rules', async (request) =>

@@ -57,6 +57,11 @@ export type JiraWorklogInput = {
   comment?: string | null;
   syncedAt: string;
 };
+type JiraMultiFilter = string | string[] | undefined;
+
+function filterValues(value: JiraMultiFilter): string[] {
+  return (Array.isArray(value) ? value : value ? [value] : []).map((item) => item.trim()).filter(Boolean);
+}
 export type JiraCommentInput = {
   id: string;
   jiraKey: string;
@@ -588,7 +593,14 @@ export class AuditDatabase {
   }
 
   async listJiraIssues(
-    filters: { q?: string; status?: string; assignee?: string; priority?: string; sprint?: string; parentKey?: string } = {}
+    filters: {
+      q?: string;
+      status?: string;
+      assignee?: string;
+      priority?: string;
+      sprint?: JiraMultiFilter;
+      parentKey?: JiraMultiFilter;
+    } = {}
   ) {
     const where: string[] = [];
     const values: unknown[] = [];
@@ -603,9 +615,10 @@ export class AuditDatabase {
       ['sprint', 'i.sprint'],
       ['parentKey', 'i.parent_key'],
     ] as const) {
-      if (filters[key]) {
-        where.push(`${column} = ?`);
-        values.push(filters[key]);
+      const selected = filterValues(filters[key]);
+      if (selected.length) {
+        where.push(`${column} IN (${selected.map(() => '?').join(', ')})`);
+        values.push(...selected);
       }
     }
     const [rows] = await this.pool.query<TaskRow[]>(
@@ -990,8 +1003,8 @@ export class AuditDatabase {
     dateFrom: string,
     dateTo: string,
     authorName?: string,
-    sprint?: string,
-    parentKey?: string
+    sprint?: JiraMultiFilter,
+    parentKey?: JiraMultiFilter
   ) {
     // Returns rows: { authorName, day (YYYY-MM-DD string), totalSeconds, issueCount }
     const where = ['w.started >= ?', 'w.started <= ?'];
@@ -1000,13 +1013,15 @@ export class AuditDatabase {
       where.push('w.author_name = ?');
       values.push(authorName);
     }
-    if (sprint) {
-      where.push('i.sprint = ?');
-      values.push(sprint);
+    const selectedSprints = filterValues(sprint);
+    if (selectedSprints.length) {
+      where.push(`i.sprint IN (${selectedSprints.map(() => '?').join(', ')})`);
+      values.push(...selectedSprints);
     }
-    if (parentKey) {
-      where.push('i.parent_key = ?');
-      values.push(parentKey);
+    const selectedParents = filterValues(parentKey);
+    if (selectedParents.length) {
+      where.push(`i.parent_key IN (${selectedParents.map(() => '?').join(', ')})`);
+      values.push(...selectedParents);
     }
     const [rows] = await this.pool.query<TaskRow[]>(
       `SELECT w.author_name AS authorName,
@@ -1027,8 +1042,9 @@ export class AuditDatabase {
     dateTo: string,
     authorName?: string,
     jiraKey?: string,
-    sprint?: string,
-    parentKey?: string
+    assignee?: string,
+    sprint?: JiraMultiFilter,
+    parentKey?: JiraMultiFilter
   ) {
     // Returns rows: { jiraKey, authorName, day (YYYY-MM-DD string), totalSeconds }
     const where: string[] = ['w.started >= ?', 'w.started <= ?'];
@@ -1041,13 +1057,19 @@ export class AuditDatabase {
       where.push('w.jira_key = ?');
       values.push(jiraKey);
     }
-    if (sprint) {
-      where.push('i.sprint = ?');
-      values.push(sprint);
+    if (assignee) {
+      where.push('i.assignee_name = ?');
+      values.push(assignee);
     }
-    if (parentKey) {
-      where.push('i.parent_key = ?');
-      values.push(parentKey);
+    const selectedSprints = filterValues(sprint);
+    if (selectedSprints.length) {
+      where.push(`i.sprint IN (${selectedSprints.map(() => '?').join(', ')})`);
+      values.push(...selectedSprints);
+    }
+    const selectedParents = filterValues(parentKey);
+    if (selectedParents.length) {
+      where.push(`i.parent_key IN (${selectedParents.map(() => '?').join(', ')})`);
+      values.push(...selectedParents);
     }
     const [rows] = await this.pool.query<TaskRow[]>(
       `SELECT w.jira_key AS jiraKey,

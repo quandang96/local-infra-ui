@@ -31,6 +31,7 @@ const selectedId = ref('');
 const draft = reactive({ title: '', content: '', tags: [] as string[], isFavorite: false });
 const tagInput = ref('');
 const dirty = ref(false);
+const bodyDirty = ref(false);
 const lastSavedAt = ref('');
 let autosaveTimer: number | undefined;
 let saveInFlight: Promise<boolean> | null = null;
@@ -53,6 +54,16 @@ const filteredNotes = computed(() => {
 });
 const wordCount = computed(() => plainText(draft.content).split(/\s+/).filter(Boolean).length);
 const readMinutes = computed(() => Math.max(1, Math.ceil(wordCount.value / 220)));
+const hasUnsavedMetadata = computed(
+  () =>
+    Boolean(selectedNote.value) &&
+    (draft.title !== selectedNote.value!.title || JSON.stringify(draft.tags) !== JSON.stringify(selectedNote.value!.tags))
+);
+const saveStatus = computed(() => {
+  if (hasUnsavedMetadata.value) return 'Tên hoặc tag chưa lưu — bấm Lưu để ghi nhận';
+  if (bodyDirty.value) return 'Đang chờ tự động lưu nội dung';
+  return lastSavedAt.value ? `Đã lưu ${formatUpdated(lastSavedAt.value)}` : 'Đã lưu';
+});
 
 function headers() {
   return { 'x-notes-access-token': accessToken.value };
@@ -70,7 +81,11 @@ function formatUpdated(value: string) {
 }
 async function select(note: Note) {
   if (note.id === selectedId.value) return;
-  if (dirty.value && !(await saveNote(true))) return;
+  if (bodyDirty.value && !(await saveNote(true, true))) return;
+  if (hasUnsavedMetadata.value) {
+    ElMessage.warning('Tên hoặc tag chưa lưu. Hãy bấm Lưu trước khi chuyển note.');
+    return;
+  }
   window.clearTimeout(autosaveTimer);
   selectedId.value = note.id;
   draft.title = note.title;
@@ -78,6 +93,7 @@ async function select(note: Note) {
   draft.tags = [...note.tags];
   draft.isFavorite = note.isFavorite;
   dirty.value = false;
+  bodyDirty.value = false;
 }
 function replaceNote(note: Note, activate = true) {
   const index = notes.value.findIndex((item) => item.id === note.id);
@@ -93,6 +109,7 @@ function clearSelection() {
   draft.tags = [];
   draft.isFavorite = false;
   dirty.value = false;
+  bodyDirty.value = false;
 }
 function setNotes(rows: Note[]) {
   notes.value = rows;
@@ -147,7 +164,11 @@ async function unlock() {
   }
 }
 async function lockNotes() {
-  if (dirty.value && !(await saveNote(true))) return;
+  if (bodyDirty.value && !(await saveNote(true, true))) return;
+  if (hasUnsavedMetadata.value) {
+    ElMessage.warning('Tên hoặc tag chưa lưu. Hãy bấm Lưu trước khi khóa Notes.');
+    return;
+  }
   window.clearTimeout(autosaveTimer);
   window.localStorage.removeItem(accessStorageKey);
   accessToken.value = '';
@@ -169,18 +190,22 @@ async function createNote() {
     saving.value = false;
   }
 }
-function queueAutosave() {
+function queueBodyAutosave() {
   if (!selectedNote.value) return;
   dirty.value = true;
+  bodyDirty.value = true;
   window.clearTimeout(autosaveTimer);
-  autosaveTimer = window.setTimeout(() => void saveNote(true), 900);
+  autosaveTimer = window.setTimeout(() => void saveNote(true, true), 900);
 }
-async function saveNote(silent = false) {
+function markMetadataDirty() {
+  if (selectedNote.value) dirty.value = true;
+}
+async function saveNote(silent = false, contentOnly = false) {
   if (saveInFlight) {
     const saved = await saveInFlight;
     if (!saved || !dirty.value) return saved;
   }
-  const task = persistNote(silent);
+  const task = persistNote(silent, contentOnly);
   saveInFlight = task;
   try {
     return await task;
@@ -188,11 +213,19 @@ async function saveNote(silent = false) {
     if (saveInFlight === task) saveInFlight = null;
   }
 }
-async function persistNote(silent: boolean) {
+async function persistNote(silent: boolean, contentOnly: boolean) {
   if (!selectedNote.value) return false;
   const noteId = selectedNote.value.id;
-  draft.title = draft.title.trim() || 'Ghi chú không tiêu đề';
-  const snapshot = JSON.stringify(draft);
+  if (!contentOnly) draft.title = draft.title.trim() || 'Ghi chú không tiêu đề';
+  const payload = contentOnly
+    ? {
+        title: selectedNote.value.title,
+        content: draft.content,
+        tags: selectedNote.value.tags,
+        isFavorite: draft.isFavorite,
+      }
+    : { ...draft };
+  const snapshot = JSON.stringify(payload);
   window.clearTimeout(autosaveTimer);
   saving.value = true;
   try {
@@ -202,7 +235,10 @@ async function persistNote(silent: boolean) {
       body: snapshot,
     });
     replaceNote(note, selectedId.value === noteId);
-    if (selectedId.value === noteId && JSON.stringify(draft) === snapshot) dirty.value = false;
+    if (selectedId.value === noteId) {
+      bodyDirty.value = contentOnly && (draft.content !== payload.content || draft.isFavorite !== payload.isFavorite);
+      dirty.value = bodyDirty.value || hasUnsavedMetadata.value || (!contentOnly && JSON.stringify(draft) !== snapshot);
+    }
     lastSavedAt.value = note.updatedAt;
     if (!silent) ElMessage.success('Đã lưu note');
     return true;
@@ -218,19 +254,19 @@ function addTag() {
   if (!tag || draft.tags.includes(tag) || draft.tags.length >= 12) return;
   draft.tags.push(tag);
   tagInput.value = '';
-  queueAutosave();
+  markMetadataDirty();
 }
 function removeTag(tag: string) {
   draft.tags = draft.tags.filter((item) => item !== tag);
-  queueAutosave();
+  markMetadataDirty();
 }
 function toggleFavorite() {
   draft.isFavorite = !draft.isFavorite;
-  queueAutosave();
+  queueBodyAutosave();
 }
 async function setShared(shared: boolean) {
   if (!selectedNote.value) return;
-  if (dirty.value && !(await saveNote(true))) return;
+  if (bodyDirty.value && !(await saveNote(true, true))) return;
   try {
     const note = await api<Note>(`/notes/${selectedNote.value.id}/share`, {
       method: 'POST',
@@ -276,7 +312,7 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   window.clearTimeout(autosaveTimer);
-  if (dirty.value) void saveNote(true);
+  if (bodyDirty.value) void saveNote(true, true);
 });
 </script>
 
@@ -360,7 +396,7 @@ onBeforeUnmount(() => {
             variant="plain"
             aria-label="Tiêu đề note"
             :readonly="!canEdit"
-            @update:model-value="canEdit && queueAutosave()"
+            @update:model-value="canEdit && markMetadataDirty()"
           />
           <div v-if="canEdit" class="notes-editor-actions">
             <v-btn
@@ -385,7 +421,7 @@ onBeforeUnmount(() => {
         <div class="notes-editor-meta">
           <span>Cập nhật {{ formatUpdated(selectedNote.updatedAt) }}</span>
           <span v-if="canEdit">{{
-            dirty ? 'Đang chờ tự động lưu' : lastSavedAt ? `Đã lưu ${formatUpdated(lastSavedAt)}` : 'Đã lưu'
+            saveStatus
           }}</span>
           <span v-else>Chỉ xem</span>
         </div>
@@ -404,7 +440,7 @@ onBeforeUnmount(() => {
             @blur="addTag"
           />
         </div>
-        <RichNoteEditor v-if="canEdit" v-model="draft.content" @update:model-value="queueAutosave" />
+        <RichNoteEditor v-if="canEdit" v-model="draft.content" @update:model-value="queueBodyAutosave" />
         <article v-else class="note-public-content" v-html="safeDraftContent"></article>
         <footer class="notes-share-bar">
           <div>
