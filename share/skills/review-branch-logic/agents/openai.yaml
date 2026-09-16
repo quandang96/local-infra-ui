@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review logic giữa hai branch"
+  short_description: "Tìm lỗi logic và nghiệp vụ từ diff giữa hai branch"
+  default_prompt: "Dùng $review-branch-logic để review base=<branch-gốc> head=<branch-thay-đổi>, nêu vị trí, tình huống gây lỗi và cách sửa; không chạy test, type check hoặc lint."
